@@ -70,6 +70,31 @@ enum Command {
         #[arg(long, default_value = "subtypes")]
         direction: String,
     },
+    /// Build task-relevant context
+    Context {
+        /// Task description
+        task: String,
+        /// Max nodes (default 25)
+        #[arg(long, default_value = "25")]
+        max_nodes: u32,
+        /// Include test files
+        #[arg(long)]
+        include_tests: bool,
+    },
+    /// Analyze blast radius of changing a symbol
+    Impact {
+        /// Symbol name or USR
+        symbol: String,
+        /// Depth of transitive analysis (default 3)
+        #[arg(long, default_value = "3")]
+        depth: u32,
+    },
+    /// Analyze impact of git diff
+    DiffImpact {
+        /// Git ref: "staged", "unstaged", or range like "HEAD~3..HEAD"
+        #[arg(long, default_value = "unstaged")]
+        git_ref: String,
+    },
 }
 
 #[tokio::main]
@@ -134,6 +159,40 @@ async fn main() -> Result<()> {
                 depth: Some(3),
             };
             let result = tools::navigation::get_hierarchy(&db_path, params)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Context {
+            task,
+            max_nodes,
+            include_tests,
+        } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let params = tools::navigation::ContextParams {
+                task,
+                max_nodes: Some(max_nodes),
+                include_tests: Some(include_tests),
+            };
+            let result = tools::navigation::get_context(&db_path, params)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Impact { symbol, depth } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let params = tools::navigation::ImpactParams {
+                symbol,
+                depth: Some(depth),
+            };
+            let result = tools::navigation::get_impact(&db_path, params)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::DiffImpact { git_ref } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let params = tools::navigation::DiffImpactParams {
+                git_ref: Some(git_ref),
+            };
+            let result = tools::navigation::get_diff_impact(&db_path, &root, params)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }

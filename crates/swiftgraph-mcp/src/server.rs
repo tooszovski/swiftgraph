@@ -61,6 +61,49 @@ pub struct FilesToolParams {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExtensionsToolParams {
+    /// Symbol ID (USR) or name
+    pub symbol: String,
+    /// Max results (default 50)
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ConformancesToolParams {
+    /// Symbol ID (USR) or name — typically a protocol name
+    pub symbol: String,
+    /// Direction: "conforms" (what does symbol conform to) or "conformedBy" (who conforms to symbol)
+    pub direction: Option<String>,
+    /// Max results (default 50)
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ContextToolParams {
+    /// Task description in natural language
+    pub task: String,
+    /// Max nodes to return (default 25)
+    pub max_nodes: Option<u32>,
+    /// Include test files in results (default false)
+    pub include_tests: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImpactToolParams {
+    /// Symbol ID (USR) or name
+    pub symbol: String,
+    /// Depth of transitive analysis (default 3)
+    pub depth: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DiffImpactToolParams {
+    /// Git ref: "staged", "unstaged", or a range like "HEAD~3..HEAD"
+    #[serde(rename = "ref")]
+    pub git_ref: Option<String>,
+}
+
 /// SwiftGraph MCP Server state.
 #[derive(Clone)]
 pub struct SwiftGraphServer {
@@ -229,13 +272,94 @@ impl SwiftGraphServer {
             Err(e) => json!({"error": e.to_string()}).to_string(),
         }
     }
+
+    /// Find all extensions of a type
+    #[tool(name = "swiftgraph_extensions")]
+    pub async fn swiftgraph_extensions(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ExtensionsToolParams>,
+    ) -> String {
+        let nav_params = navigation::ExtensionsParams {
+            symbol: params.symbol,
+            limit: params.limit,
+        };
+        match navigation::get_extensions(&self.db_path, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Query protocol conformances — who conforms to a protocol, or what protocols a type conforms to
+    #[tool(name = "swiftgraph_conformances")]
+    pub async fn swiftgraph_conformances(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ConformancesToolParams>,
+    ) -> String {
+        let nav_params = navigation::ConformancesParams {
+            symbol: params.symbol,
+            direction: params.direction,
+            limit: params.limit,
+        };
+        match navigation::get_conformances(&self.db_path, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Build task-relevant context: extracts keywords, searches graph, expands 2 levels, ranks by importance
+    #[tool(name = "swiftgraph_context")]
+    pub async fn swiftgraph_context(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ContextToolParams>,
+    ) -> String {
+        let nav_params = navigation::ContextParams {
+            task: params.task,
+            max_nodes: params.max_nodes,
+            include_tests: params.include_tests,
+        };
+        match navigation::get_context(&self.db_path, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Analyze blast radius of changing a symbol — direct/transitive impact, affected files/tests
+    #[tool(name = "swiftgraph_impact")]
+    pub async fn swiftgraph_impact(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ImpactToolParams>,
+    ) -> String {
+        let nav_params = navigation::ImpactParams {
+            symbol: params.symbol,
+            depth: params.depth,
+        };
+        match navigation::get_impact(&self.db_path, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Analyze impact of git diff — changed symbols, blast radius, affected tests
+    #[tool(name = "swiftgraph_diff_impact")]
+    pub async fn swiftgraph_diff_impact(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DiffImpactToolParams>,
+    ) -> String {
+        let nav_params = navigation::DiffImpactParams {
+            git_ref: params.git_ref,
+        };
+        match navigation::get_diff_impact(&self.db_path, &self.project_root, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Use swiftgraph_status to check index, swiftgraph_reindex to index files, then query with search/node/callers/callees/references/hierarchy/files.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact.".into());
         info
     }
 }

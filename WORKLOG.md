@@ -180,3 +180,57 @@
 
 ### Quality Gates
 - clippy clean, fmt clean, 11/11 tests pass
+
+---
+
+## Session 3 (cont.): v0.3 Audit Engine
+
+### Audit Framework (~1100 lines)
+- `AuditRule` trait: id, name, category, severity, check
+- `FileContext`: file_path, source, tree-sitter AST
+- Parallel runner via rayon across Swift files
+- Helpers: find_descendants, node_text, has_attribute, class_keyword, decl_name
+
+### Rules Implemented — 12 rules
+| ID | Category | Severity | Description |
+|----|----------|----------|-------------|
+| CONC-001 | Concurrency | High | Missing @MainActor on UIViewController/ObservableObject |
+| CONC-002 | Concurrency | High | Unsafe Task capture (self without [weak self]) |
+| CONC-003 | Concurrency | Critical | Task.detached accessing MainActor-isolated properties |
+| CONC-004 | Concurrency | Medium | Actor hop in loop |
+| MEM-001 | Memory | High | Closure retain cycle in escaping context |
+| MEM-002 | Memory | High | Strong delegate reference |
+| MEM-003 | Memory | Medium | Timer not invalidated |
+| MEM-004 | Memory | Medium | NotificationCenter observer without removal |
+| SEC-001 | Security | Critical | Hardcoded secrets (API keys, tokens, passwords) |
+| SEC-002 | Security | High | Insecure storage (UserDefaults for sensitive data) |
+| SEC-003 | Security | Medium | Sensitive data logging |
+| SEC-004 | Security | High | ATS bypass (non-HTTPS URLs) |
+
+### MCP + CLI
+- `swiftgraph_audit` MCP tool (15th tool)
+- `swiftgraph audit` CLI with --categories, --min-severity, --path, --format, --max-issues
+
+### Integration Test: Production Project
+- Full scan: **56 findings** (0 critical, 48 high, 8 medium) across 941 files
+- Security-only: 5 findings (3 high, 2 medium)
+- Performance: parallel scanning completes in <2s
+
+### Commits — 2 new (17 total)
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `90a9544` | feat(audit) | Audit engine + 12 rules (CONC/MEM/SEC) + 4 tests |
+| `928c5b1` | feat(mcp) | swiftgraph_audit MCP tool + CLI subcommand |
+
+### Tests — 15/15 passing (4 new)
+
+| # | Test | Module | Verifies |
+|---|------|--------|----------|
+| 12 | `detect_strong_delegate` | audit/runner | MEM-002 detection |
+| 13 | `detect_insecure_storage` | audit/runner | SEC-002 detection |
+| 14 | `detect_http_url` | audit/runner | SEC-004 detection |
+| 15 | `no_false_positive_localhost` | audit/runner | SEC-004 no false positive for localhost |
+
+### Quality Gates
+- clippy clean, fmt clean, 15/15 tests pass

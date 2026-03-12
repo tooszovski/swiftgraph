@@ -33,20 +33,16 @@
 
 ## v0.3 — Audit Engine
 
-- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI using SwiftSyntax for AST-level checks (concurrency, memory, security patterns)
-- [ ] **Audit rule framework** — rule registration, severity filtering, category grouping, fix suggestions
-- [ ] **Concurrency checks (CONC-001..007)**
-  - CONC-001: missing `@MainActor` on UIViewController/ObservableObject/View
-  - CONC-002: unsafe Task capture (`Task { self.property }` without `[weak self]`)
-  - CONC-003: nonisolated self access
-  - CONC-004: Sendable violations across actor boundaries (graph-based)
-  - CONC-005: `@MainActor` property from `Task.detached`
-  - CONC-006: stored Task without weak capture
-  - CONC-007: actor hop in loop
-- [ ] **Memory checks (MEM-001..006)** — retain cycles, timer leaks, delegate strong refs, closure captures, NotificationCenter observers, KVO cleanup
-- [ ] **Security checks (SEC-001..006)** — hardcoded secrets, insecure storage, ATS bypass, plain-text logging, injectable format strings, missing certificate pinning
-- [ ] **`swiftgraph_audit` MCP tool** — run checks by category/severity/path scope
-- [ ] **CLI `swiftgraph audit`** — text/json output modes
+- [x] **Audit rule framework** — AuditRule trait, parallel runner (rayon), tree-sitter pattern matching, severity filtering, category grouping
+- [x] **Concurrency checks (CONC-001..004)** — missing @MainActor, unsafe Task capture, Task.detached actor isolation, actor hop in loop
+- [x] **Memory checks (MEM-001..004)** — closure retain cycles, strong delegates, timer leaks, observer leaks
+- [x] **Security checks (SEC-001..004)** — hardcoded secrets, insecure storage, sensitive logging, ATS bypass
+- [x] **`swiftgraph_audit` MCP tool** — categories, min_severity, path_filter, max_issues
+- [x] **CLI `swiftgraph audit`** — text/json output formats
+- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks (deferred to v0.5)
+- [ ] **Additional CONC rules (005..007)** — Sendable violations, stored Task without weak capture, nonisolated self access
+- [ ] **Additional MEM rules (005..006)** — KVO cleanup, PhotoKit accumulation
+- [ ] **Additional SEC rules (005..006)** — injectable format strings, missing certificate pinning
 
 ---
 

@@ -1,0 +1,19 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# SwiftGraph runtime
+.swiftgraph/
+
+# Swift build (for swiftgraph-parser)
+.build/

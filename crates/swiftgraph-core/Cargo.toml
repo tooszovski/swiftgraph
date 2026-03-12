@@ -1,0 +1,23 @@
+[package]
+name = "swiftgraph-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Core graph model, indexing pipeline, and storage for SwiftGraph"
+
+[dependencies]
+tree-sitter.workspace = true
+tree-sitter-swift.workspace = true
+rusqlite.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+walkdir.workspace = true
+globset.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

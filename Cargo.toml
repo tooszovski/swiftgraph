@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/swiftgraph-core",
+    "crates/swiftgraph-audit",
+    "crates/swiftgraph-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# MCP
+rmcp = { version = "1.2", features = ["server", "transport-io"] }
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Parsing
+tree-sitter = "0.25"
+tree-sitter-swift = "0.7"
+
+# Storage
+rusqlite = { version = "0.32", features = ["bundled", "vtab"] }
+
+# Git
+gix = { version = "0.71", default-features = false, features = ["basic", "revision"] }
+
+# Parallelism
+rayon = "1.10"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Hashing
+sha2 = "0.10"
+
+# Path handling
+walkdir = "2"
+globset = "0.4"

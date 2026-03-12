@@ -86,9 +86,13 @@ async fn main() -> Result<()> {
             let root = get_project_root(project);
             cmd_init(&root)?;
         }
-        Command::Index { project, force, .. } => {
+        Command::Index {
+            project,
+            force,
+            index_store_path,
+        } => {
             let root = get_project_root(project);
-            cmd_index(&root, force)?;
+            cmd_index(&root, force, index_store_path.as_deref())?;
         }
         Command::Serve { mcp, project } => {
             let root = get_project_root(project);
@@ -186,15 +190,31 @@ fn cmd_init(root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_index(root: &Path, force: bool) -> Result<()> {
+fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Result<()> {
     let db_path = root.join(".swiftgraph/db.sqlite");
     eprintln!("Indexing {}...", root.display());
 
-    let result = swiftgraph_core::pipeline::index_directory(&db_path, root, force)?;
+    // Auto-detect Index Store from project info if not provided
+    let store_path = index_store_path.map(|p| p.to_path_buf()).or_else(|| {
+        swiftgraph_core::project::detect_project(root)
+            .ok()
+            .and_then(|info| info.index_store_path)
+    });
+
+    let result = swiftgraph_core::pipeline::index_directory_with_store(
+        &db_path,
+        root,
+        force,
+        store_path.as_deref(),
+    )?;
 
     eprintln!(
-        "Done: {} files scanned, {} indexed, {} nodes, {} edges",
-        result.files_scanned, result.files_indexed, result.nodes_added, result.edges_added
+        "Done ({:?}): {} files scanned, {} indexed, {} nodes, {} edges",
+        result.strategy,
+        result.files_scanned,
+        result.files_indexed,
+        result.nodes_added,
+        result.edges_added
     );
     Ok(())
 }

@@ -4,11 +4,11 @@
 
 ### P0 — Must-have for v0.1 release
 
-- [ ] **libIndexStore C FFI bindings** — bindgen-generated Rust bindings for 81 `indexstore_*` symbols from Xcode's `libIndexStore.dylib`
-- [ ] **Index Store reader** — parse Index Store data into `GraphNode`/`GraphEdge`, write to SQLite. USR-based identifiers for compiler-accurate edges
-- [ ] **Semantic edge replacement** — when Index Store is available, replace tree-sitter-inferred edges with compiler-accurate edges (calls, conformances, inheritance)
-- [ ] **`swiftgraph_files` MCP tool** — list indexed files with stats (node count, edge count, last indexed timestamp)
-- [ ] **Real project integration test** — test full pipeline on a real SPM project (e.g., swift-collections or Alamofire)
+- [x] **libIndexStore C FFI bindings** — runtime-loaded (dlopen) bindings for 30+ `indexstore_*` functions, auto-discovers via xcrun
+- [x] **Index Store reader** — reads units/records into GraphNode/GraphEdge with relation mapping (calledBy, baseOf, overrideOf, childOf, extendedBy)
+- [x] **Semantic edge replacement** — pipeline prefers Index Store when available, falls back to tree-sitter (Hybrid/TreeSitter/IndexStore strategies)
+- [x] **`swiftgraph_files` MCP tool** — list indexed files with stats, filterable by path prefix
+- [x] **Real project integration test** — tested on ~/git/ios (941 files, 6824 nodes, 6140 edges)
 
 ### P1 — Quality
 

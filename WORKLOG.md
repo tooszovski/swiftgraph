@@ -51,6 +51,78 @@
 4. **ServerInfo non-exhaustive** — can't use struct literal with `..Default::default()`. Fixed: `let mut info = Default::default(); info.instructions = ...`
 5. **GPG key not found** — `commit.gpgsign` was enabled globally. Fixed: disabled locally
 
+---
+
+## Session 2: 2026-03-12 — Index Store FFI, Pipeline Integration, Real Project Test
+
+### libIndexStore FFI Bindings
+- Fetched official C header from `swiftlang/llvm-project` (`indexstore.h`, v0.16)
+- Hand-written Rust FFI bindings in `index_store/ffi.rs` (~500 lines):
+  - Runtime dynamic linking via `dlopen`/`dlsym` (no build-time Xcode dependency)
+  - 30+ function pointers: store lifecycle, unit enumeration, record reading, symbol/occurrence/relation access
+  - Auto-discovers dylib via `xcrun --find swift` → toolchain lib path, or well-known Xcode paths
+  - Supports `INDEXSTORE_LIB_PATH` env override
+  - `Send + Sync` — thread-safe for concurrent reads
+
+### Index Store Reader
+- `index_store/reader.rs` (~350 lines): converts Index Store data → `GraphNode`/`GraphEdge`
+  - Unit enumeration → filter Swift non-system units → record reading
+  - Occurrence processing with relation mapping:
+    - `REL_CALLEDBY` → `EdgeKind::Calls`
+    - `REL_BASEOF` → `EdgeKind::ConformsTo` / `EdgeKind::InheritsFrom` (protocol vs class)
+    - `REL_OVERRIDEOF` → `EdgeKind::Overrides`
+    - `REL_CHILDOF` → `EdgeKind::Contains`
+    - `REL_EXTENDEDBY` → `EdgeKind::ExtendsType`
+  - Symbol kind mapping (28 Index Store kinds → 15 graph kinds)
+  - Access level from properties bitfield (public/package/internal/fileprivate/private)
+
+### Pipeline Integration
+- `index_directory_with_store()` — tries Index Store first, tree-sitter fallback
+- Reports `IndexStrategy`: `IndexStore`, `TreeSitter`, or `Hybrid`
+- CLI `index` command auto-detects Index Store via `project::detect_project()`
+
+### New MCP Tool: `swiftgraph_files`
+- Lists indexed files with stats (path, hash, last_indexed, symbol_count)
+- Filterable by path prefix (e.g. `Sources/Features/`)
+
+### Data Model Additions
+- `SymbolKind::Module` — for Index Store module symbols
+- `AccessLevel::Package` — Swift 5.9+ package access control
+- `NodeMetrics` derives `Default`
+
+### Schema Fix
+- Removed FK constraints on `edges.source`/`edges.target` → `nodes.id`
+- Reason: edges often reference SDK symbols (UIKit, Foundation) not in our index
+- `INSERT OR IGNORE` now works correctly on real projects
+
+### Integration Test: Production Project 
+- XcodeGen project, 941 Swift files
+- **6824 nodes, 6140 edges** indexed via tree-sitter
+- Search, hierarchy, callers all verified
+- MCP server added to `.mcp.json`, JSON-RPC handshake verified
+- Index Store path not found (project not built) → graceful degradation to tree-sitter
+
+### Commits — 4 new (11 total)
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `af61ae1` | fix(storage) | Remove FK constraints on edges for SDK symbol compatibility |
+| `5b8879c` | feat(core) | libIndexStore FFI bindings + Index Store reader |
+| `c5f7e97` | feat(core) | Integrate Index Store into indexing pipeline |
+| `ec49c9d` | feat(mcp) | swiftgraph_files tool, Module kind, Package access level |
+
+### Tests — 10/10 passing
+
+| # | Test | Module | Verifies |
+|---|------|--------|----------|
+| 9 | `get_files_query` | storage | get_files with path prefix filter |
+| 10 | `index_store_lib_loads` | storage | libIndexStore.dylib discovery via xcrun |
+
+### Quality Gates
+- `cargo clippy --workspace -- -D warnings` — clean
+- `cargo fmt --all -- --check` — clean
+- `cargo test --workspace` — 10/10 pass
+
 ### Dependency Versions (locked)
 | Crate | Version |
 |-------|---------|

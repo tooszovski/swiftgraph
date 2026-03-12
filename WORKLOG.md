@@ -137,3 +137,46 @@
 | serde_json | 1.0.149 |
 | sha2 | 0.10.9 |
 | walkdir | 2.5.0 |
+
+---
+
+## Session 3: 2026-03-12 — v0.2 Intelligence
+
+### Analysis Module — 3 new modules (~500 lines)
+- `analysis/context.rs` — task-based context builder
+  - Keyword extraction (stop word filtering, min 3 chars)
+  - FTS5 search per keyword with LIKE fallback
+  - 2-level BFS expansion via incoming/outgoing edges
+  - Scoring: `incoming * 2 + outgoing + 50 seed bonus + 10 name boost`
+  - Architecture detection (VIPER, TCA/Redux, MVVM+Coordinator, MVVM+Router, MVVM)
+- `analysis/impact.rs` — blast radius analysis
+  - Direct dependents categorized by edge kind
+  - BFS transitive dependents up to configurable depth
+  - Risk levels: low/medium/high/critical
+- `analysis/diff_impact.rs` — git diff-based impact
+  - Uses `git diff --name-only --diff-filter=ACMR`
+  - Finds symbols in changed files, aggregates impact
+
+### New Queries — 8 functions
+- `get_extensions()`, `get_conformances(direction)`, `get_all_incoming()`, `get_all_outgoing()`, `count_incoming()`, `count_outgoing()`, `get_nodes_in_file()`, `find_nodes_by_name_pattern()`
+
+### MCP Tools — 5 new (14 total)
+- `swiftgraph_extensions`, `swiftgraph_conformances`, `swiftgraph_context`, `swiftgraph_impact`, `swiftgraph_diff_impact`
+
+### CLI Subcommands — 3 new
+- `context`, `impact`, `diff-impact`
+
+### Integration Test: Production Project
+- Context, impact, diff-impact all verified on 941-file project
+
+### Commits — 2 new (13 total)
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `17c6ea1` | feat(core) | Context builder, impact analysis, diff-impact, 8 new queries |
+| `0a59aba` | feat(mcp) | 5 new MCP tools + 3 CLI subcommands + name resolution |
+
+### Tests — 11/11 passing
+
+### Quality Gates
+- clippy clean, fmt clean, 11/11 tests pass

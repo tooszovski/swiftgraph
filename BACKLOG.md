@@ -20,11 +20,11 @@
 
 ## v0.2 — Intelligence
 
-- [ ] **`swiftgraph_context`** — task-based context builder: keyword extraction → FTS5 search → 2-level graph expansion → PageRank ranking → source code attachment
-- [ ] **`swiftgraph_impact`** — blast radius analysis for a symbol: direct/transitive callers, affected files, affected tests, risk level
-- [ ] **`swiftgraph_diff_impact`** — git-based impact analysis via `gix`: unstaged/staged/commit-range → changed symbols → blast radius
-- [ ] **`swiftgraph_extensions`** — find all extensions of a type (including cross-module)
-- [ ] **`swiftgraph_conformances`** — protocol conformance queries (who conforms, what does X conform to)
+- [x] **`swiftgraph_context`** — task-based context builder: keyword extraction → FTS5 search → 2-level graph expansion → relevance ranking
+- [x] **`swiftgraph_impact`** — blast radius analysis for a symbol: direct/transitive callers, affected files, affected tests, risk level
+- [x] **`swiftgraph_diff_impact`** — git-based impact analysis: unstaged/staged/commit-range → changed symbols → blast radius
+- [x] **`swiftgraph_extensions`** — find all extensions of a type (including cross-module)
+- [x] **`swiftgraph_conformances`** — protocol conformance queries (who conforms, what does X conform to)
 - [ ] **FTS5 search improvements** — trigram tokenizer, prefix queries, ranking by symbol importance
 
 > Note: FTS5 basic search and incremental reindex (SHA256) are already implemented in v0.1.

@@ -1,0 +1,14 @@
+[package]
+name = "swiftgraph-audit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Static analysis audit engine for SwiftGraph"
+
+[dependencies]
+swiftgraph-core = { path = "../swiftgraph-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

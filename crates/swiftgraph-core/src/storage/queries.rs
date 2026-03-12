@@ -1,0 +1,307 @@
+use rusqlite::{params, Connection, Result as SqlResult};
+
+use crate::graph::{
+    AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, NodeMetrics, SymbolKind,
+};
+
+/// Insert or replace a node in the database.
+pub fn upsert_node(conn: &Connection, node: &GraphNode) -> SqlResult<()> {
+    conn.execute(
+        r#"INSERT OR REPLACE INTO nodes
+           (id, name, qualified_name, kind, sub_kind, file, line, col, end_line, end_col,
+            signature, attributes, access_level, container_usr, doc_comment,
+            lines, complexity, parameter_count)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"#,
+        params![
+            node.id,
+            node.name,
+            node.qualified_name,
+            node.kind.as_str(),
+            node.sub_kind.map(|sk| format!("{sk:?}")),
+            node.location.file,
+            node.location.line,
+            node.location.column,
+            node.location.end_line,
+            node.location.end_column,
+            node.signature,
+            serde_json::to_string(&node.attributes).unwrap_or_default(),
+            format!("{:?}", node.access_level),
+            node.container_usr,
+            node.doc_comment,
+            node.metrics.as_ref().and_then(|m| m.lines),
+            node.metrics.as_ref().and_then(|m| m.complexity),
+            node.metrics.as_ref().and_then(|m| m.parameter_count),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Insert an edge into the database.
+pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
+    conn.execute(
+        r#"INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+        params![
+            edge.source,
+            edge.target,
+            edge.kind.as_str(),
+            edge.location.as_ref().map(|l| &l.file),
+            edge.location.as_ref().map(|l| l.line),
+            edge.location.as_ref().map(|l| l.column),
+            edge.is_implicit as i32,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upsert a file record.
+pub fn upsert_file(conn: &Connection, path: &str, hash: &str, symbol_count: u32) -> SqlResult<()> {
+    conn.execute(
+        r#"INSERT OR REPLACE INTO files (path, hash, last_indexed, symbol_count)
+           VALUES (?1, ?2, datetime('now'), ?3)"#,
+        params![path, hash, symbol_count],
+    )?;
+    Ok(())
+}
+
+/// Search nodes by name using FTS5.
+pub fn search_nodes(conn: &Connection, query: &str, limit: u32) -> SqlResult<Vec<GraphNode>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT n.id, n.name, n.qualified_name, n.kind, n.sub_kind,
+                  n.file, n.line, n.col, n.end_line, n.end_col,
+                  n.signature, n.attributes, n.access_level, n.container_usr,
+                  n.doc_comment, n.lines, n.complexity, n.parameter_count
+           FROM node_fts f
+           JOIN nodes n ON n.rowid = f.rowid
+           WHERE node_fts MATCH ?1
+           LIMIT ?2"#,
+    )?;
+
+    let rows = stmt.query_map(params![query, limit], row_to_node)?;
+    rows.collect()
+}
+
+/// Get a node by its ID (USR).
+pub fn get_node(conn: &Connection, id: &str) -> SqlResult<Option<GraphNode>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes WHERE id = ?1"#,
+    )?;
+
+    let mut rows = stmt.query_map(params![id], row_to_node)?;
+    match rows.next() {
+        Some(row) => Ok(Some(row?)),
+        None => Ok(None),
+    }
+}
+
+/// Find nodes by name (exact or prefix match).
+pub fn find_nodes_by_name(
+    conn: &Connection,
+    name: &str,
+    kind: Option<&str>,
+    limit: u32,
+) -> SqlResult<Vec<GraphNode>> {
+    let sql = if kind.is_some() {
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes WHERE name LIKE ?1 AND kind = ?2 LIMIT ?3"#
+    } else {
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes WHERE name LIKE ?1 LIMIT ?3"#
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let pattern = format!("%{name}%");
+
+    let rows = if let Some(k) = kind {
+        stmt.query_map(params![pattern, k, limit], row_to_node)?
+    } else {
+        stmt.query_map(params![pattern, "", limit], row_to_node)?
+    };
+    rows.collect()
+}
+
+/// Get edges where source matches (outgoing edges).
+pub fn get_callees(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    get_edges_by(conn, "source", symbol_id, Some("calls"), limit)
+}
+
+/// Get edges where target matches (incoming edges).
+pub fn get_callers(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    get_edges_by(conn, "target", symbol_id, Some("calls"), limit)
+}
+
+/// Get all references to a symbol.
+pub fn get_references(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    get_edges_by(conn, "target", symbol_id, None, limit)
+}
+
+/// Get type hierarchy edges (conformsTo, inheritsFrom).
+pub fn get_subtypes(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT source, target, kind, file, line, col, is_implicit
+           FROM edges
+           WHERE target = ?1 AND kind IN ('conformsTo', 'inheritsFrom')
+           LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
+/// Get supertypes of a symbol.
+pub fn get_supertypes(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT source, target, kind, file, line, col, is_implicit
+           FROM edges
+           WHERE source = ?1 AND kind IN ('conformsTo', 'inheritsFrom')
+           LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
+/// Get graph statistics.
+pub fn get_stats(conn: &Connection) -> SqlResult<GraphStats> {
+    let file_count: u32 = conn.query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+    let node_count: u32 = conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
+    let edge_count: u32 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+
+    Ok(GraphStats {
+        file_count,
+        node_count,
+        edge_count,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphStats {
+    pub file_count: u32,
+    pub node_count: u32,
+    pub edge_count: u32,
+}
+
+use serde::{Deserialize, Serialize};
+
+// --- internal helpers ---
+
+fn get_edges_by(
+    conn: &Connection,
+    field: &str,
+    symbol_id: &str,
+    kind_filter: Option<&str>,
+    limit: u32,
+) -> SqlResult<Vec<GraphEdge>> {
+    let sql = if let Some(kind) = kind_filter {
+        format!(
+            "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE {field} = ?1 AND kind = '{kind}' LIMIT ?2"
+        )
+    } else {
+        format!(
+            "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE {field} = ?1 LIMIT ?2"
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
+fn row_to_node(row: &rusqlite::Row) -> SqlResult<GraphNode> {
+    let kind_str: String = row.get(3)?;
+    let attributes_json: String = row.get::<_, Option<String>>(11)?.unwrap_or_default();
+
+    Ok(GraphNode {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        qualified_name: row.get(2)?,
+        kind: parse_symbol_kind(&kind_str),
+        sub_kind: None, // TODO: parse sub_kind
+        location: Location {
+            file: row.get(5)?,
+            line: row.get(6)?,
+            column: row.get(7)?,
+            end_line: row.get(8)?,
+            end_column: row.get(9)?,
+        },
+        signature: row.get(10)?,
+        attributes: serde_json::from_str(&attributes_json).unwrap_or_default(),
+        access_level: AccessLevel::Internal, // TODO: parse access_level
+        container_usr: row.get(13)?,
+        doc_comment: row.get(14)?,
+        metrics: Some(NodeMetrics {
+            lines: row.get(15)?,
+            complexity: row.get(16)?,
+            parameter_count: row.get(17)?,
+        }),
+    })
+}
+
+fn row_to_edge(row: &rusqlite::Row) -> SqlResult<GraphEdge> {
+    let kind_str: String = row.get(2)?;
+    let file: Option<String> = row.get(3)?;
+    let line: Option<u32> = row.get(4)?;
+    let col: Option<u32> = row.get(5)?;
+
+    Ok(GraphEdge {
+        source: row.get(0)?,
+        target: row.get(1)?,
+        kind: parse_edge_kind(&kind_str),
+        location: file.map(|f| Location {
+            file: f,
+            line: line.unwrap_or(0),
+            column: col.unwrap_or(0),
+            end_line: None,
+            end_column: None,
+        }),
+        is_implicit: row.get::<_, i32>(6)? != 0,
+    })
+}
+
+fn parse_symbol_kind(s: &str) -> SymbolKind {
+    match s {
+        "class" => SymbolKind::Class,
+        "struct" => SymbolKind::Struct,
+        "enum" => SymbolKind::Enum,
+        "protocol" => SymbolKind::Protocol,
+        "method" => SymbolKind::Method,
+        "property" => SymbolKind::Property,
+        "function" => SymbolKind::Function,
+        "typeAlias" => SymbolKind::TypeAlias,
+        "extension" => SymbolKind::Extension,
+        "enumCase" => SymbolKind::EnumCase,
+        "macro" => SymbolKind::Macro,
+        "associatedType" => SymbolKind::AssociatedType,
+        "import" => SymbolKind::Import,
+        "file" => SymbolKind::File,
+        _ => SymbolKind::Function, // fallback
+    }
+}
+
+fn parse_edge_kind(s: &str) -> EdgeKind {
+    match s {
+        "calls" => EdgeKind::Calls,
+        "conformsTo" => EdgeKind::ConformsTo,
+        "inheritsFrom" => EdgeKind::InheritsFrom,
+        "extendsType" => EdgeKind::ExtendsType,
+        "overrides" => EdgeKind::Overrides,
+        "implementsRequirement" => EdgeKind::ImplementsRequirement,
+        "references" => EdgeKind::References,
+        "mutates" => EdgeKind::Mutates,
+        "imports" => EdgeKind::Imports,
+        "dependsOn" => EdgeKind::DependsOn,
+        "contains" => EdgeKind::Contains,
+        "returns" => EdgeKind::Returns,
+        "parameterOf" => EdgeKind::ParameterOf,
+        "propertyType" => EdgeKind::PropertyType,
+        _ => EdgeKind::References, // fallback
+    }
+}

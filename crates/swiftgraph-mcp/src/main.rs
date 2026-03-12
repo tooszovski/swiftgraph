@@ -95,6 +95,39 @@ enum Command {
         #[arg(long, default_value = "unstaged")]
         git_ref: String,
     },
+    /// Analyze structural complexity
+    Complexity {
+        /// Filter by file path prefix
+        #[arg(long)]
+        path: Option<String>,
+        /// Max results
+        #[arg(long, default_value = "30")]
+        limit: u32,
+        /// Sort by: score, fan_in, fan_out
+        #[arg(long, default_value = "score")]
+        sort_by: String,
+    },
+    /// Find dead code
+    DeadCode {
+        /// Filter by file path prefix
+        #[arg(long)]
+        path: Option<String>,
+        /// Include test files
+        #[arg(long)]
+        include_tests: bool,
+        /// Max results
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+    /// Detect dependency cycles
+    Cycles {
+        /// Filter by file path prefix
+        #[arg(long)]
+        path: Option<String>,
+        /// Max cycles
+        #[arg(long, default_value = "20")]
+        max_cycles: u32,
+    },
     /// Run static analysis audit
     Audit {
         /// Comma-separated categories: concurrency, memory, security (empty = all)
@@ -211,6 +244,43 @@ async fn main() -> Result<()> {
                 git_ref: Some(git_ref),
             };
             let result = tools::navigation::get_diff_impact(&db_path, &root, params)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Complexity {
+            path,
+            limit,
+            sort_by,
+        } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result = tools::navigation::get_complexity(
+                &db_path,
+                path.as_deref(),
+                Some(limit),
+                Some(sort_by.as_str()),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::DeadCode {
+            path,
+            include_tests,
+            limit,
+        } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result = tools::navigation::get_dead_code(
+                &db_path,
+                path.as_deref(),
+                include_tests,
+                Some(limit),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Cycles { path, max_cycles } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result =
+                tools::navigation::get_cycles(&db_path, path.as_deref(), Some(max_cycles))?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Audit {

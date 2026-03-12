@@ -105,6 +105,34 @@ pub struct DiffImpactToolParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ComplexityToolParams {
+    /// Filter by file path prefix
+    pub path: Option<String>,
+    /// Max symbols to return (default 30)
+    pub limit: Option<u32>,
+    /// Sort by: "score", "fan_in", or "fan_out" (default "score")
+    pub sort_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DeadCodeToolParams {
+    /// Filter by file path prefix
+    pub path: Option<String>,
+    /// Include test files (default false)
+    pub include_tests: Option<bool>,
+    /// Max results (default 50)
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CyclesToolParams {
+    /// Filter by file path prefix
+    pub path: Option<String>,
+    /// Max cycles to return (default 20)
+    pub max_cycles: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditToolParams {
     /// Comma-separated categories to check (e.g. "concurrency,memory,security"). Empty = all
     pub categories: Option<String>,
@@ -366,6 +394,52 @@ impl SwiftGraphServer {
         }
     }
 
+    /// Analyze structural complexity — fan-in/fan-out metrics for symbols
+    #[tool(name = "swiftgraph_complexity")]
+    pub async fn swiftgraph_complexity(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ComplexityToolParams>,
+    ) -> String {
+        match navigation::get_complexity(
+            &self.db_path,
+            params.path.as_deref(),
+            params.limit,
+            params.sort_by.as_deref(),
+        ) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Find potentially dead code — symbols with no incoming references
+    #[tool(name = "swiftgraph_dead_code")]
+    pub async fn swiftgraph_dead_code(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<DeadCodeToolParams>,
+    ) -> String {
+        match navigation::get_dead_code(
+            &self.db_path,
+            params.path.as_deref(),
+            params.include_tests.unwrap_or(false),
+            params.limit,
+        ) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
+    /// Detect file-level dependency cycles
+    #[tool(name = "swiftgraph_cycles")]
+    pub async fn swiftgraph_cycles(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<CyclesToolParams>,
+    ) -> String {
+        match navigation::get_cycles(&self.db_path, params.path.as_deref(), params.max_cycles) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
     /// Run static analysis audit — checks for concurrency, memory, and security issues
     #[tool(name = "swiftgraph_audit")]
     pub async fn swiftgraph_audit(
@@ -389,7 +463,7 @@ impl SwiftGraphServer {
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, audit.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, audit.".into());
         info
     }
 }

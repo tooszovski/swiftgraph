@@ -247,6 +247,47 @@ pub fn get_diff_impact(
     Ok(result)
 }
 
+// --- v0.4: Analysis ---
+
+pub fn get_complexity(
+    db_path: &Path,
+    path_filter: Option<&str>,
+    limit: Option<u32>,
+    sort_by: Option<&str>,
+) -> Result<analysis::complexity::ComplexityResult> {
+    let result = analysis::complexity::analyze_complexity(
+        db_path,
+        path_filter,
+        limit.unwrap_or(30),
+        sort_by.unwrap_or("score"),
+    )?;
+    Ok(result)
+}
+
+pub fn get_dead_code(
+    db_path: &Path,
+    path_filter: Option<&str>,
+    include_tests: bool,
+    limit: Option<u32>,
+) -> Result<analysis::dead_code::DeadCodeResult> {
+    let result = analysis::dead_code::find_dead_code(
+        db_path,
+        path_filter,
+        include_tests,
+        limit.unwrap_or(50),
+    )?;
+    Ok(result)
+}
+
+pub fn get_cycles(
+    db_path: &Path,
+    path_filter: Option<&str>,
+    max_cycles: Option<u32>,
+) -> Result<analysis::cycles::CycleResult> {
+    let result = analysis::cycles::detect_cycles(db_path, path_filter, max_cycles.unwrap_or(20))?;
+    Ok(result)
+}
+
 // --- v0.3: Audit ---
 
 /// Parse audit options from string parameters.

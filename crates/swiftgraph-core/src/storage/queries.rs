@@ -456,6 +456,78 @@ pub fn get_affected_files(conn: &Connection, node_ids: &[String]) -> SqlResult<V
     rows.collect()
 }
 
+/// Get all nodes (up to limit).
+pub fn get_all_nodes(conn: &Connection, limit: u32) -> SqlResult<Vec<GraphNode>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, qualified_name, kind, sub_kind, file, line, col, end_line, end_col, \
+         signature, attributes, access_level, container_usr, doc_comment, \
+         lines, complexity, parameter_count \
+         FROM nodes LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], row_to_node)?;
+    rows.collect()
+}
+
+/// Get nodes filtered by file path prefix.
+pub fn get_nodes_by_path_prefix(
+    conn: &Connection,
+    prefix: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphNode>> {
+    let pattern = format!("{prefix}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, name, qualified_name, kind, sub_kind, file, line, col, end_line, end_col, \
+         signature, attributes, access_level, container_usr, doc_comment, \
+         lines, complexity, parameter_count \
+         FROM nodes WHERE file LIKE ?1 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![pattern, limit], row_to_node)?;
+    rows.collect()
+}
+
+/// Get cross-file edges: returns (source_file, target_file) pairs.
+pub fn get_cross_file_edges(
+    conn: &Connection,
+    path_filter: Option<&str>,
+    limit: u32,
+) -> SqlResult<Vec<(String, String)>> {
+    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+        if let Some(prefix) = path_filter {
+            let pattern = format!("{prefix}%");
+            (
+                "SELECT DISTINCT n1.file, n2.file \
+             FROM edges e \
+             JOIN nodes n1 ON e.source = n1.id \
+             JOIN nodes n2 ON e.target = n2.id \
+             WHERE n1.file LIKE ?1 AND n2.file LIKE ?1 AND n1.file != n2.file \
+             LIMIT ?2"
+                    .to_string(),
+                vec![
+                    Box::new(pattern) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(limit),
+                ],
+            )
+        } else {
+            (
+                "SELECT DISTINCT n1.file, n2.file \
+             FROM edges e \
+             JOIN nodes n1 ON e.source = n1.id \
+             JOIN nodes n2 ON e.target = n2.id \
+             WHERE n1.file != n2.file \
+             LIMIT ?1"
+                    .to_string(),
+                vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql>],
+            )
+        };
+    let mut stmt = conn.prepare(&sql)?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
 fn parse_edge_kind(s: &str) -> EdgeKind {
     match s {
         "calls" => EdgeKind::Calls,

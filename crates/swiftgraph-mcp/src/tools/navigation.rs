@@ -2,6 +2,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use swiftgraph_audit::engine::{AuditResult, Category, Severity};
+use swiftgraph_audit::runner::{self, AuditOptions};
 use swiftgraph_core::analysis;
 use swiftgraph_core::graph::{GraphEdge, GraphNode};
 use swiftgraph_core::storage::{self, queries};
@@ -242,5 +244,48 @@ pub fn get_diff_impact(
 ) -> Result<analysis::diff_impact::DiffImpactResult> {
     let git_ref = params.git_ref.as_deref().unwrap_or("unstaged");
     let result = analysis::diff_impact::analyze_diff_impact(db_path, project_root, git_ref)?;
+    Ok(result)
+}
+
+// --- v0.3: Audit ---
+
+/// Parse audit options from string parameters.
+pub fn parse_audit_options(
+    categories: Option<&str>,
+    min_severity: Option<&str>,
+    path_filter: Option<String>,
+    max_issues: Option<usize>,
+) -> AuditOptions {
+    let cats = categories
+        .map(|s| {
+            s.split(',')
+                .filter_map(|c| match c.trim() {
+                    "concurrency" => Some(Category::Concurrency),
+                    "memory" => Some(Category::Memory),
+                    "security" => Some(Category::Security),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let severity = match min_severity {
+        Some("critical") => Severity::Critical,
+        Some("high") => Severity::High,
+        Some("medium") => Severity::Medium,
+        _ => Severity::Low,
+    };
+
+    AuditOptions {
+        categories: cats,
+        min_severity: severity,
+        path_filter,
+        max_issues: max_issues.unwrap_or(100),
+    }
+}
+
+/// Run audit on a project.
+pub fn run_audit(project_root: &Path, options: AuditOptions) -> Result<AuditResult> {
+    let result = runner::run_audit(project_root, &options)?;
     Ok(result)
 }

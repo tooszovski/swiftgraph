@@ -95,6 +95,24 @@ enum Command {
         #[arg(long, default_value = "unstaged")]
         git_ref: String,
     },
+    /// Run static analysis audit
+    Audit {
+        /// Comma-separated categories: concurrency, memory, security (empty = all)
+        #[arg(long)]
+        categories: Option<String>,
+        /// Minimum severity: low, medium, high, critical
+        #[arg(long, default_value = "low")]
+        min_severity: String,
+        /// Filter by file path prefix
+        #[arg(long)]
+        path: Option<String>,
+        /// Output format: json, text
+        #[arg(long, default_value = "text")]
+        format: String,
+        /// Max issues
+        #[arg(long, default_value = "100")]
+        max_issues: usize,
+    },
 }
 
 #[tokio::main]
@@ -194,6 +212,27 @@ async fn main() -> Result<()> {
             };
             let result = tools::navigation::get_diff_impact(&db_path, &root, params)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Audit {
+            categories,
+            min_severity,
+            path,
+            format,
+            max_issues,
+        } => {
+            let root = get_project_root(None);
+            let options = tools::navigation::parse_audit_options(
+                categories.as_deref(),
+                Some(min_severity.as_str()),
+                path,
+                Some(max_issues),
+            );
+            let result = tools::navigation::run_audit(&root, options)?;
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                print!("{}", swiftgraph_audit::output::format_text(&result));
+            }
         }
     }
 

@@ -1,0 +1,23 @@
+[package]
+name = "swiftgraph-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "MCP server and CLI for SwiftGraph"
+
+[[bin]]
+name = "swiftgraph"
+path = "src/main.rs"
+
+[dependencies]
+swiftgraph-core = { path = "../swiftgraph-core" }
+swiftgraph-audit = { path = "../swiftgraph-audit" }
+rmcp.workspace = true
+tokio.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

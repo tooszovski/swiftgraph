@@ -1,4 +1,4 @@
-// TODO v0.1: libIndexStore C FFI bindings via bindgen
-// The C API is at: /Applications/Xcode.app/.../usr/lib/libIndexStore.dylib
-// 81 exported symbols prefixed `indexstore_`
-// Header from: https://github.com/swiftlang/llvm-project (indexstore.h)
+/// Raw FFI bindings for libIndexStore C API (runtime-loaded via `dlopen`).
+pub mod ffi;
+/// High-level reader that converts Index Store data into `GraphNode`/`GraphEdge`.
+pub mod reader;

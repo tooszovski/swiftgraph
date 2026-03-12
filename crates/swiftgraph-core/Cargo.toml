@@ -10,6 +10,7 @@ description = "Core graph model, indexing pipeline, and storage for SwiftGraph"
 tree-sitter.workspace = true
 tree-sitter-swift.workspace = true
 rusqlite.workspace = true
+gix.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true

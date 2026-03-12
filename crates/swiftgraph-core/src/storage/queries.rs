@@ -335,6 +335,127 @@ pub fn get_files(
     Ok(files)
 }
 
+/// Get all extensions of a type (edges with kind = 'extendsType' targeting the symbol).
+pub fn get_extensions(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT source, target, kind, file, line, col, is_implicit
+           FROM edges WHERE target = ?1 AND kind = 'extendsType'
+           LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
+/// Get conformances for a symbol (edges with kind = 'conformsTo').
+/// If `direction` is "conformedBy", find types conforming to the symbol (as protocol).
+/// If "conforms", find protocols the symbol conforms to.
+pub fn get_conformances(
+    conn: &Connection,
+    symbol_id: &str,
+    direction: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphEdge>> {
+    let sql = if direction == "conformedBy" {
+        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE target = ?1 AND kind = 'conformsTo' LIMIT ?2"
+    } else {
+        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE source = ?1 AND kind = 'conformsTo' LIMIT ?2"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
+/// Get all nodes in a given file.
+pub fn get_nodes_in_file(conn: &Connection, file_path: &str) -> SqlResult<Vec<GraphNode>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes WHERE file = ?1
+           ORDER BY line"#,
+    )?;
+    let rows = stmt.query_map(params![file_path], row_to_node)?;
+    rows.collect()
+}
+
+/// Get all incoming edges to a symbol (any kind).
+pub fn get_all_incoming(
+    conn: &Connection,
+    symbol_id: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphEdge>> {
+    get_edges_by(conn, "target", symbol_id, None, limit)
+}
+
+/// Get all outgoing edges from a symbol (any kind).
+pub fn get_all_outgoing(
+    conn: &Connection,
+    symbol_id: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphEdge>> {
+    get_edges_by(conn, "source", symbol_id, None, limit)
+}
+
+/// Count incoming edges to a symbol.
+pub fn count_incoming(conn: &Connection, symbol_id: &str) -> SqlResult<u32> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE target = ?1",
+        params![symbol_id],
+        |r| r.get(0),
+    )
+}
+
+/// Count outgoing edges from a symbol.
+pub fn count_outgoing(conn: &Connection, symbol_id: &str) -> SqlResult<u32> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM edges WHERE source = ?1",
+        params![symbol_id],
+        |r| r.get(0),
+    )
+}
+
+/// Find nodes by name pattern (LIKE).
+pub fn find_nodes_by_name_pattern(
+    conn: &Connection,
+    pattern: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphNode>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes WHERE name LIKE ?1
+           LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![format!("%{pattern}%"), limit], row_to_node)?;
+    rows.collect()
+}
+
+/// Get distinct files referenced by edges of given nodes.
+pub fn get_affected_files(conn: &Connection, node_ids: &[String]) -> SqlResult<Vec<String>> {
+    if node_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders: String = node_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT DISTINCT n.file FROM nodes n \
+         INNER JOIN edges e ON (e.source = n.id OR e.target = n.id) \
+         WHERE e.source IN ({placeholders}) OR e.target IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = node_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::types::ToSql)
+        .collect();
+    // Duplicate params for both IN clauses
+    let mut all_params = params.clone();
+    all_params.extend(params);
+    let rows = stmt.query_map(all_params.as_slice(), |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
 fn parse_edge_kind(s: &str) -> EdgeKind {
     match s {
         "calls" => EdgeKind::Calls,

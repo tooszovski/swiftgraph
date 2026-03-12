@@ -58,6 +58,7 @@ pub enum SymbolKind {
     EnumCase,
     Macro,
     AssociatedType,
+    Module,
     Import,
     File,
 }
@@ -78,6 +79,7 @@ impl SymbolKind {
             Self::EnumCase => "enumCase",
             Self::Macro => "macro",
             Self::AssociatedType => "associatedType",
+            Self::Module => "module",
             Self::Import => "import",
             Self::File => "file",
         }
@@ -101,6 +103,7 @@ pub enum SymbolSubKind {
 pub enum AccessLevel {
     Open,
     Public,
+    Package,
     #[default]
     Internal,
     FilePrivate,
@@ -108,7 +111,7 @@ pub enum AccessLevel {
 }
 
 /// Computed metrics for a node.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeMetrics {
     pub lines: Option<u32>,
     pub complexity: Option<u32>,

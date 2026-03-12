@@ -280,10 +280,59 @@ fn parse_symbol_kind(s: &str) -> SymbolKind {
         "enumCase" => SymbolKind::EnumCase,
         "macro" => SymbolKind::Macro,
         "associatedType" => SymbolKind::AssociatedType,
+        "module" => SymbolKind::Module,
         "import" => SymbolKind::Import,
         "file" => SymbolKind::File,
         _ => SymbolKind::Function, // fallback
     }
+}
+
+/// File info from the files table.
+#[derive(Debug, serde::Serialize)]
+pub struct FileInfo {
+    pub path: String,
+    pub hash: String,
+    pub last_indexed: String,
+    pub symbol_count: u32,
+}
+
+/// List indexed files with optional path filter.
+pub fn get_files(
+    conn: &Connection,
+    path_prefix: Option<&str>,
+    limit: u32,
+) -> SqlResult<Vec<FileInfo>> {
+    let (sql, params_vec): (&str, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(prefix) =
+        path_prefix
+    {
+        (
+            "SELECT path, hash, last_indexed, symbol_count FROM files WHERE path LIKE ?1 ORDER BY path LIMIT ?2",
+            vec![Box::new(format!("{prefix}%")), Box::new(limit)],
+        )
+    } else {
+        (
+            "SELECT path, hash, last_indexed, symbol_count FROM files ORDER BY path LIMIT ?1",
+            vec![Box::new(limit)],
+        )
+    };
+
+    let mut stmt = conn.prepare(sql)?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+        params_vec.iter().map(|p| p.as_ref()).collect();
+    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+        Ok(FileInfo {
+            path: row.get(0)?,
+            hash: row.get(1)?,
+            last_indexed: row.get(2)?,
+            symbol_count: row.get(3)?,
+        })
+    })?;
+
+    let mut files = Vec::new();
+    for row in rows {
+        files.push(row?);
+    }
+    Ok(files)
 }
 
 fn parse_edge_kind(s: &str) -> EdgeKind {

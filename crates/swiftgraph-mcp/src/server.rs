@@ -104,6 +104,18 @@ pub struct DiffImpactToolParams {
     pub git_ref: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AuditToolParams {
+    /// Comma-separated categories to check (e.g. "concurrency,memory,security"). Empty = all
+    pub categories: Option<String>,
+    /// Minimum severity: "low", "medium", "high", "critical" (default "low")
+    pub min_severity: Option<String>,
+    /// Filter by file path prefix (e.g. "Sources/Features/")
+    pub path_filter: Option<String>,
+    /// Max issues to return (default 100)
+    pub max_issues: Option<usize>,
+}
+
 /// SwiftGraph MCP Server state.
 #[derive(Clone)]
 pub struct SwiftGraphServer {
@@ -353,13 +365,31 @@ impl SwiftGraphServer {
             Err(e) => json!({"error": e.to_string()}).to_string(),
         }
     }
+
+    /// Run static analysis audit — checks for concurrency, memory, and security issues
+    #[tool(name = "swiftgraph_audit")]
+    pub async fn swiftgraph_audit(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<AuditToolParams>,
+    ) -> String {
+        let options = navigation::parse_audit_options(
+            params.categories.as_deref(),
+            params.min_severity.as_deref(),
+            params.path_filter,
+            params.max_issues,
+        );
+        match navigation::run_audit(&self.project_root, options) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, audit.".into());
         info
     }
 }

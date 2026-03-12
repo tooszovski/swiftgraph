@@ -234,3 +234,36 @@
 
 ### Quality Gates
 - clippy clean, fmt clean, 15/15 tests pass
+
+---
+
+## Session 3 (cont.): v0.4 Analysis
+
+### Analysis Modules — 3 new (~450 lines)
+- `analysis/complexity.rs` — fan-in/fan-out metrics, structural complexity scoring, per-file aggregates
+- `analysis/dead_code.rs` — unreachable symbol detection, excludes public API/tests/entry points/containers
+- `analysis/cycles.rs` — file-level dependency cycle detection via DFS on cross-file edges
+
+### New Queries — 3 functions
+- `get_all_nodes()`, `get_nodes_by_path_prefix()`, `get_cross_file_edges()`
+
+### MCP Tools — 3 new (18 total)
+- `swiftgraph_complexity`, `swiftgraph_dead_code`, `swiftgraph_cycles`
+
+### CLI Subcommands — 3 new
+- `complexity`, `dead-code`, `cycles`
+
+### Integration Test: Production Project
+- Complexity: MainRouter (61 fan-out), MainRouterDestination (47), PushModuleAlias (39) — real hotspots
+- Dead code: 10 unreachable symbols from 6824 checked (0.15%) — ServiceKey, HTTPTransport functions
+- Cycles: 0 (expected — tree-sitter edges reference synthetic IDs; needs Index Store for cross-file edges)
+
+### Commits — 2 new (19 total)
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `6611287` | feat(core) | Complexity, dead code, cycle detection + 3 new queries |
+| `3009549` | feat(mcp) | 3 new MCP tools + 3 CLI subcommands |
+
+### Quality Gates
+- clippy clean, fmt clean, 15/15 tests pass

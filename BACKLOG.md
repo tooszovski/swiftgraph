@@ -48,13 +48,12 @@
 
 ## v0.4 — Analysis
 
-- [ ] **`swiftgraph_complexity`** — cyclomatic + cognitive complexity, fan-in/fan-out per symbol/file/directory
-- [ ] **`swiftgraph_dead_code`** — USR-based unreachable symbol detection (no incoming edges), with exclusions for public API, tests, entry points
-- [ ] **`swiftgraph_cycles`** — cycle detection at file/type/module level
+- [x] **`swiftgraph_complexity`** — fan-in/fan-out metrics per symbol/file, sorted by structural complexity score
+- [x] **`swiftgraph_dead_code`** — unreachable symbol detection (no incoming edges), excludes public API/tests/entry points
+- [x] **`swiftgraph_cycles`** — file-level dependency cycle detection via DFS
 - [ ] **`swiftgraph_coupling`** — afferent/efferent coupling, instability, abstractness metrics between modules
-- [ ] **`swiftgraph_architecture`** — auto-detect architectural pattern (MVVM, MVC, VIPER, Clean, TCA, MVVM+C, MVVM+Router), verify conformance
-- [ ] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement (from/deny/allow rules)
-- [ ] **`swiftgraph_concurrency`** — deep concurrency analysis combining graph + AST data
+- [ ] **`swiftgraph_architecture`** — auto-detect architectural pattern, verify conformance
+- [ ] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement
 - [ ] **`swiftgraph_imports`** — module dependency graph with visualization data
 
 ---

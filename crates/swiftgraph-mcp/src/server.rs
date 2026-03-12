@@ -53,6 +53,14 @@ pub struct HierarchyToolParams {
     pub depth: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FilesToolParams {
+    /// Filter by path prefix (e.g. "Sources/Features/")
+    pub path: Option<String>,
+    /// Max results (default 100)
+    pub limit: Option<u32>,
+}
+
 /// SwiftGraph MCP Server state.
 #[derive(Clone)]
 pub struct SwiftGraphServer {
@@ -205,13 +213,29 @@ impl SwiftGraphServer {
             Err(e) => json!({"error": e.to_string()}).to_string(),
         }
     }
+
+    /// List indexed files with stats (node count, last indexed). Filter by path prefix
+    #[tool(name = "swiftgraph_files")]
+    pub async fn swiftgraph_files(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<FilesToolParams>,
+    ) -> String {
+        let nav_params = navigation::FilesParams {
+            path: params.path,
+            limit: params.limit,
+        };
+        match navigation::get_files(&self.db_path, nav_params) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
 }
 
 #[tool_handler]
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Use swiftgraph_status to check index, swiftgraph_reindex to index files, then query with search/node/callers/callees/references/hierarchy.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Use swiftgraph_status to check index, swiftgraph_reindex to index files, then query with search/node/callers/callees/references/hierarchy/files.".into());
         info
     }
 }

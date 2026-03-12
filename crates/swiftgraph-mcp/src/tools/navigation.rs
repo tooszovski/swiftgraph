@@ -121,3 +121,23 @@ pub fn get_hierarchy(db_path: &Path, params: HierarchyParams) -> Result<Hierarch
         related,
     })
 }
+
+#[derive(Debug, Deserialize)]
+pub struct FilesParams {
+    pub path: Option<String>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct FilesResponse {
+    pub files: Vec<swiftgraph_core::storage::queries::FileInfo>,
+    pub count: usize,
+}
+
+pub fn get_files(db_path: &Path, params: FilesParams) -> Result<FilesResponse> {
+    let conn = storage::open_db(db_path)?;
+    let limit = params.limit.unwrap_or(100);
+    let files = queries::get_files(&conn, params.path.as_deref(), limit)?;
+    let count = files.len();
+    Ok(FilesResponse { files, count })
+}

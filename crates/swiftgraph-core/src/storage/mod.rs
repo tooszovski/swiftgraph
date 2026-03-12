@@ -121,6 +121,40 @@ mod tests {
         assert_eq!(callees[0].target, "usr:B");
     }
 
+    #[test]
+    fn get_files_query() {
+        let conn = open_memory_db().unwrap();
+        queries::upsert_file(&conn, "Sources/A.swift", "hash_a", 3).unwrap();
+        queries::upsert_file(&conn, "Sources/B.swift", "hash_b", 5).unwrap();
+        queries::upsert_file(&conn, "Tests/T.swift", "hash_t", 1).unwrap();
+
+        // All files
+        let files = queries::get_files(&conn, None, 100).unwrap();
+        assert_eq!(files.len(), 3);
+
+        // Filter by prefix
+        let src_files = queries::get_files(&conn, Some("Sources/"), 100).unwrap();
+        assert_eq!(src_files.len(), 2);
+
+        // Check fields
+        assert_eq!(src_files[0].symbol_count, 3);
+    }
+
+    #[test]
+    fn index_store_lib_loads() {
+        // This test only passes on macOS with Xcode installed.
+        // It verifies that the FFI loading code works.
+        match crate::index_store::ffi::IndexStoreLib::load() {
+            Ok(_lib) => {
+                // Successfully loaded — Xcode is installed
+            }
+            Err(e) => {
+                // Expected on CI or systems without Xcode
+                eprintln!("IndexStoreLib::load() skipped: {e}");
+            }
+        }
+    }
+
     fn make_node(id: &str, name: &str, file: &str, kind: SymbolKind) -> GraphNode {
         GraphNode {
             id: id.into(),

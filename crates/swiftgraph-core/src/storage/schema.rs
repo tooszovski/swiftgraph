@@ -38,9 +38,8 @@ CREATE TABLE IF NOT EXISTS edges (
     line        INTEGER,
     col         INTEGER,
     is_implicit INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (source, target, kind, line),
-    FOREIGN KEY (source) REFERENCES nodes(id),
-    FOREIGN KEY (target) REFERENCES nodes(id)
+    PRIMARY KEY (source, target, kind, line)
+    -- No FK on source/target: targets may reference SDK symbols not in our index
 );
 
 CREATE TABLE IF NOT EXISTS diagnostics (

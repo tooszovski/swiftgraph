@@ -128,6 +128,27 @@ enum Command {
         #[arg(long, default_value = "20")]
         max_cycles: u32,
     },
+    /// Analyze module coupling metrics
+    Coupling {
+        /// Directory depth for module grouping (default 2)
+        #[arg(long, default_value = "2")]
+        depth: u32,
+        /// Source root prefix to strip
+        #[arg(long)]
+        source_root: Option<String>,
+    },
+    /// Detect or validate architecture pattern
+    Architecture {
+        /// Expected pattern: mvvm, viper, tca, mvc (empty = auto-detect)
+        #[arg(long)]
+        expected: Option<String>,
+    },
+    /// Analyze module imports
+    Imports {
+        /// Filter by file path prefix
+        #[arg(long)]
+        path: Option<String>,
+    },
     /// Run static analysis audit
     Audit {
         /// Comma-separated categories: concurrency, memory, security (empty = all)
@@ -281,6 +302,25 @@ async fn main() -> Result<()> {
             let db_path = root.join(".swiftgraph/db.sqlite");
             let result =
                 tools::navigation::get_cycles(&db_path, path.as_deref(), Some(max_cycles))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Coupling { depth, source_root } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result =
+                tools::navigation::get_coupling(&db_path, Some(depth), source_root.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Architecture { expected } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result = tools::navigation::get_architecture(&db_path, expected.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Imports { path } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let result = tools::navigation::get_imports(&db_path, path.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Audit {

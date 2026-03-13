@@ -59,20 +59,29 @@ pub fn analyze_complexity(
     sort_by: &str, // "score", "fan_in", "fan_out"
 ) -> Result<ComplexityResult, ComplexityError> {
     let conn = storage::open_db(db_path)?;
+    analyze_complexity_from_conn(&conn, path_filter, limit, sort_by)
+}
 
+/// Analyze complexity from an existing connection.
+pub fn analyze_complexity_from_conn(
+    conn: &rusqlite::Connection,
+    path_filter: Option<&str>,
+    limit: u32,
+    sort_by: &str,
+) -> Result<ComplexityResult, ComplexityError> {
     // Get all nodes (filtered by path if specified)
     let nodes = if let Some(prefix) = path_filter {
-        queries::get_nodes_by_path_prefix(&conn, prefix, 5000)?
+        queries::get_nodes_by_path_prefix(conn, prefix, 5000)?
     } else {
-        queries::get_all_nodes(&conn, 5000)?
+        queries::get_all_nodes(conn, 5000)?
     };
 
     let mut symbols: Vec<SymbolComplexity> = Vec::new();
     let mut file_map: HashMap<String, Vec<&SymbolComplexity>> = HashMap::new();
 
     for node in &nodes {
-        let fan_in = queries::count_incoming(&conn, &node.id).unwrap_or(0);
-        let fan_out = queries::count_outgoing(&conn, &node.id).unwrap_or(0);
+        let fan_in = queries::count_incoming(conn, &node.id).unwrap_or(0);
+        let fan_out = queries::count_outgoing(conn, &node.id).unwrap_or(0);
         let score = fan_in as f64 * 1.5 + fan_out as f64;
 
         symbols.push(SymbolComplexity {

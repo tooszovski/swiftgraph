@@ -1,7 +1,7 @@
 use rusqlite::{params, Connection, Result as SqlResult};
 
 use crate::graph::{
-    AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, NodeMetrics, SymbolKind,
+    AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, NodeMetrics, SymbolKind, SymbolSubKind,
 };
 
 /// Insert or replace a node in the database.
@@ -247,7 +247,10 @@ fn row_to_node(row: &rusqlite::Row) -> SqlResult<GraphNode> {
         name: row.get(1)?,
         qualified_name: row.get(2)?,
         kind: parse_symbol_kind(&kind_str),
-        sub_kind: None, // TODO: parse sub_kind
+        sub_kind: row
+            .get::<_, Option<String>>(4)?
+            .as_deref()
+            .and_then(parse_sub_kind),
         location: Location {
             file: row.get(5)?,
             line: row.get(6)?,
@@ -257,7 +260,11 @@ fn row_to_node(row: &rusqlite::Row) -> SqlResult<GraphNode> {
         },
         signature: row.get(10)?,
         attributes: serde_json::from_str(&attributes_json).unwrap_or_default(),
-        access_level: AccessLevel::Internal, // TODO: parse access_level
+        access_level: row
+            .get::<_, Option<String>>(12)?
+            .as_deref()
+            .map(parse_access_level)
+            .unwrap_or_default(),
         container_usr: row.get(13)?,
         doc_comment: row.get(14)?,
         metrics: Some(NodeMetrics {
@@ -549,6 +556,31 @@ pub fn get_cross_file_edges(
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     rows.collect()
+}
+
+/// Parse a `SymbolSubKind` from its `Debug` string representation.
+fn parse_sub_kind(s: &str) -> Option<SymbolSubKind> {
+    match s {
+        "Getter" => Some(SymbolSubKind::Getter),
+        "Setter" => Some(SymbolSubKind::Setter),
+        "Subscript" => Some(SymbolSubKind::Subscript),
+        "Initializer" => Some(SymbolSubKind::Initializer),
+        "Deinitializer" => Some(SymbolSubKind::Deinitializer),
+        _ => None,
+    }
+}
+
+/// Parse an `AccessLevel` from its `Debug` string representation.
+fn parse_access_level(s: &str) -> AccessLevel {
+    match s {
+        "Open" => AccessLevel::Open,
+        "Public" => AccessLevel::Public,
+        "Package" => AccessLevel::Package,
+        "Internal" => AccessLevel::Internal,
+        "FilePrivate" => AccessLevel::FilePrivate,
+        "Private" => AccessLevel::Private,
+        _ => AccessLevel::Internal, // fallback
+    }
 }
 
 fn parse_edge_kind(s: &str) -> EdgeKind {

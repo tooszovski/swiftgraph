@@ -23,6 +23,7 @@ globset.workspace = true
 [dev-dependencies]
 tempfile = "3"
 criterion.workspace = true
+proptest.workspace = true
 
 [[bench]]
 name = "indexing"

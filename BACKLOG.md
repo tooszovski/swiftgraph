@@ -55,7 +55,7 @@
 - [x] **`swiftgraph_coupling`** — afferent/efferent coupling, instability, abstractness metrics between modules
 - [x] **`swiftgraph_architecture`** — auto-detect architectural pattern, verify conformance
 - [x] **`swiftgraph_imports`** — module dependency graph with visualization data
-- [ ] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement
+- [x] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement
 
 ---
 

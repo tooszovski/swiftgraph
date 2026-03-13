@@ -315,6 +315,17 @@ pub fn get_imports(
     Ok(result)
 }
 
+/// Check architecture boundaries from JSON config.
+pub fn get_boundaries(
+    db_path: &Path,
+    config_json: &str,
+) -> Result<analysis::boundaries::BoundaryResult> {
+    let config: analysis::boundaries::BoundaryConfig = serde_json::from_str(config_json)
+        .map_err(|e| anyhow::anyhow!("Invalid boundary config JSON: {e}"))?;
+    let result = analysis::boundaries::check_boundaries(db_path, &config)?;
+    Ok(result)
+}
+
 // --- v0.3: Audit ---
 
 /// Parse audit options from string parameters.

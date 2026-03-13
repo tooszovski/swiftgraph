@@ -1,5 +1,7 @@
 /// Architecture pattern detection and validation.
 pub mod architecture;
+/// Architecture boundary enforcement.
+pub mod boundaries;
 /// Complexity analysis — fan-in/fan-out and structural complexity.
 pub mod complexity;
 /// Task-based context builder — collects relevant symbols for a given task description.

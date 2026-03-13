@@ -153,6 +153,13 @@ pub struct ImportsToolParams {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BoundariesToolParams {
+    /// JSON string of boundary config with layers and rules.
+    /// Example: {"layers": [{"name": "Views", "pattern": "**/Views/**"}, {"name": "Services", "pattern": "**/Services/**"}], "rules": [{"from": "Views", "to": "Services", "allowed": false}]}
+    pub config: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditToolParams {
     /// Comma-separated categories to check (e.g. "concurrency,memory,security"). Empty = all
     pub categories: Option<String>,
@@ -496,6 +503,18 @@ impl SwiftGraphServer {
         }
     }
 
+    /// Check architecture boundary violations — define layers and allowed/disallowed dependencies
+    #[tool(name = "swiftgraph_boundaries")]
+    pub async fn swiftgraph_boundaries(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<BoundariesToolParams>,
+    ) -> String {
+        match navigation::get_boundaries(&self.db_path, &params.config) {
+            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
     /// Run static analysis audit — checks for concurrency, memory, and security issues
     #[tool(name = "swiftgraph_audit")]
     pub async fn swiftgraph_audit(
@@ -519,7 +538,7 @@ impl SwiftGraphServer {
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, audit.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, boundaries, audit.".into());
         info
     }
 }

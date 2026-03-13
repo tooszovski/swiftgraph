@@ -58,9 +58,7 @@ impl AuditRule for FrequentTimer {
                     file: ctx.file_path.to_string(),
                     line: timer.start_position().row as u32 + 1,
                     symbol: None,
-                    fix: Some(
-                        "Increase interval or use CADisplayLink for frame-rate work".into(),
-                    ),
+                    fix: Some("Increase interval or use CADisplayLink for frame-rate work".into()),
                 });
             }
         }
@@ -156,7 +154,8 @@ impl AuditRule for ContinuousLocation {
                 return false;
             }
             let text = node_text(node, src);
-            text.contains("startUpdatingLocation") || text.contains("startMonitoringSignificantLocationChanges")
+            text.contains("startUpdatingLocation")
+                || text.contains("startMonitoringSignificantLocationChanges")
         });
 
         for call in calls {
@@ -237,7 +236,8 @@ impl AuditRule for AnimationLeak {
                     category: self.category(),
                     severity: self.severity(),
                     rule: self.id().to_string(),
-                    message: "repeatForever animation — ensure it stops when view disappears".into(),
+                    message: "repeatForever animation — ensure it stops when view disappears"
+                        .into(),
                     file: ctx.file_path.to_string(),
                     line: link.start_position().row as u32 + 1,
                     symbol: None,

@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use notify::{RecursiveMode, Watcher};
 use tracing_subscriber::EnvFilter;
 
 mod server;
@@ -142,6 +145,15 @@ enum Command {
         /// Expected pattern: mvvm, viper, tca, mvc (empty = auto-detect)
         #[arg(long)]
         expected: Option<String>,
+    },
+    /// Watch for file changes and auto-reindex
+    Watch {
+        /// Project root path
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Debounce interval in seconds (default 2)
+        #[arg(long, default_value = "2")]
+        debounce: u64,
     },
     /// Analyze module imports
     Imports {
@@ -304,6 +316,10 @@ async fn main() -> Result<()> {
                 tools::navigation::get_cycles(&db_path, path.as_deref(), Some(max_cycles))?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
+        Command::Watch { project, debounce } => {
+            let root = get_project_root(project);
+            cmd_watch(&root, debounce)?;
+        }
         Command::Coupling { depth, source_root } => {
             let root = get_project_root(None);
             let db_path = root.join(".swiftgraph/db.sqlite");
@@ -338,10 +354,10 @@ async fn main() -> Result<()> {
                 Some(max_issues),
             );
             let result = tools::navigation::run_audit(&root, options)?;
-            if format == "json" {
-                println!("{}", serde_json::to_string_pretty(&result)?);
-            } else {
-                print!("{}", swiftgraph_audit::output::format_text(&result));
+            match format.as_str() {
+                "json" => println!("{}", serde_json::to_string_pretty(&result)?),
+                "sarif" => print!("{}", swiftgraph_audit::output::format_sarif(&result)),
+                _ => print!("{}", swiftgraph_audit::output::format_text(&result)),
             }
         }
     }
@@ -425,6 +441,65 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
         result.edges_added
     );
     Ok(())
+}
+
+fn cmd_watch(root: &Path, debounce_secs: u64) -> Result<()> {
+    let db_path = root.join(".swiftgraph/db.sqlite");
+
+    // Initial index
+    eprintln!("Initial indexing {}...", root.display());
+    cmd_index(root, false, None)?;
+
+    eprintln!(
+        "Watching for Swift file changes (debounce: {}s)...",
+        debounce_secs
+    );
+    eprintln!("Press Ctrl+C to stop.");
+
+    let (tx, rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(event) = res {
+            if event.paths.iter().any(|p| {
+                p.extension().is_some_and(|e| e == "swift")
+                    && !p.to_string_lossy().contains("/.build/")
+                    && !p.to_string_lossy().contains("/DerivedData/")
+            }) {
+                let _ = tx.send(());
+            }
+        }
+    })?;
+
+    watcher.watch(root, RecursiveMode::Recursive)?;
+
+    loop {
+        // Wait for a change event
+        rx.recv()?;
+
+        // Debounce: drain additional events within the window
+        let deadline = std::time::Instant::now() + Duration::from_secs(debounce_secs);
+        while std::time::Instant::now() < deadline {
+            if rx
+                .recv_timeout(deadline - std::time::Instant::now())
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        // Incremental reindex
+        eprintln!("Change detected — reindexing...");
+        match swiftgraph_core::pipeline::index_directory(&db_path, root, false) {
+            Ok(result) => {
+                if result.files_indexed > 0 {
+                    eprintln!(
+                        "Reindexed: {} files, {} nodes, {} edges",
+                        result.files_indexed, result.nodes_added, result.edges_added
+                    );
+                }
+            }
+            Err(e) => eprintln!("Reindex error: {e}"),
+        }
+    }
 }
 
 async fn cmd_serve_mcp(root: PathBuf) -> Result<()> {

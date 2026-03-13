@@ -83,6 +83,27 @@ pub fn search_nodes(conn: &Connection, query: &str, limit: u32) -> SqlResult<Vec
     rows.collect()
 }
 
+/// Search nodes by substring using trigram FTS (supports "Delegate" matching "AppDelegate").
+pub fn search_nodes_trigram(
+    conn: &Connection,
+    query: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphNode>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT n.id, n.name, n.qualified_name, n.kind, n.sub_kind,
+                  n.file, n.line, n.col, n.end_line, n.end_col,
+                  n.signature, n.attributes, n.access_level, n.container_usr,
+                  n.doc_comment, n.lines, n.complexity, n.parameter_count
+           FROM node_trigram t
+           JOIN nodes n ON n.rowid = t.rowid
+           WHERE node_trigram MATCH ?1
+           LIMIT ?2"#,
+    )?;
+
+    let rows = stmt.query_map(params![query, limit], row_to_node)?;
+    rows.collect()
+}
+
 /// Get a node by its ID (USR).
 pub fn get_node(conn: &Connection, id: &str) -> SqlResult<Option<GraphNode>> {
     let mut stmt = conn.prepare(

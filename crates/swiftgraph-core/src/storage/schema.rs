@@ -94,3 +94,30 @@ CREATE TRIGGER IF NOT EXISTS nodes_au AFTER UPDATE ON nodes BEGIN
     VALUES (new.rowid, new.name, new.qualified_name, new.signature);
 END;
 "#;
+
+/// Trigram FTS table for substring matching (e.g., "Delegate" matches "AppDelegate").
+pub const CREATE_FTS_TRIGRAM: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS node_trigram USING fts5(
+    name,
+    content=nodes,
+    content_rowid=rowid,
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS nodes_tri_ai AFTER INSERT ON nodes BEGIN
+    INSERT INTO node_trigram(rowid, name)
+    VALUES (new.rowid, new.name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_tri_ad AFTER DELETE ON nodes BEGIN
+    INSERT INTO node_trigram(node_trigram, rowid, name)
+    VALUES ('delete', old.rowid, old.name);
+END;
+
+CREATE TRIGGER IF NOT EXISTS nodes_tri_au AFTER UPDATE ON nodes BEGIN
+    INSERT INTO node_trigram(node_trigram, rowid, name)
+    VALUES ('delete', old.rowid, old.name);
+    INSERT INTO node_trigram(rowid, name)
+    VALUES (new.rowid, new.name);
+END;
+"#;

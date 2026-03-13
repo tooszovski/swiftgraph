@@ -33,6 +33,8 @@ pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
     // Create schema
     conn.execute_batch(schema::CREATE_TABLES)?;
     conn.execute_batch(schema::CREATE_FTS)?;
+    // Trigram table is best-effort (requires SQLite 3.34+)
+    let _ = conn.execute_batch(schema::CREATE_FTS_TRIGRAM);
 
     Ok(conn)
 }
@@ -43,6 +45,8 @@ pub fn open_memory_db() -> Result<Connection, StorageError> {
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
     conn.execute_batch(schema::CREATE_TABLES)?;
     conn.execute_batch(schema::CREATE_FTS)?;
+    // Trigram table is best-effort (requires SQLite 3.34+)
+    let _ = conn.execute_batch(schema::CREATE_FTS_TRIGRAM);
     Ok(conn)
 }
 

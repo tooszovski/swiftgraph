@@ -48,7 +48,16 @@ pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
             results.retain(|n| n.kind.as_str() == k);
         }
 
-        // Fallback to LIKE if FTS5 returned nothing
+        // Fallback chain: trigram substring → LIKE
+        if results.is_empty() {
+            // Try trigram FTS for substring matching (e.g., "Delegate" → "AppDelegate")
+            if let Ok(mut tri) = queries::search_nodes_trigram(&conn, query, limit) {
+                if let Some(k) = kind {
+                    tri.retain(|n| n.kind.as_str() == k);
+                }
+                results = tri;
+            }
+        }
         if results.is_empty() {
             results = queries::find_nodes_by_name(&conn, query, kind, limit)?;
         }

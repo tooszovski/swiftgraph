@@ -48,11 +48,20 @@ pub fn find_dead_code(
     limit: u32,
 ) -> Result<DeadCodeResult, DeadCodeError> {
     let conn = storage::open_db(db_path)?;
+    find_dead_code_from_conn(&conn, path_filter, include_tests, limit)
+}
 
+/// Find dead code from an existing connection.
+pub fn find_dead_code_from_conn(
+    conn: &rusqlite::Connection,
+    path_filter: Option<&str>,
+    include_tests: bool,
+    limit: u32,
+) -> Result<DeadCodeResult, DeadCodeError> {
     let nodes = if let Some(prefix) = path_filter {
-        queries::get_nodes_by_path_prefix(&conn, prefix, 10000)?
+        queries::get_nodes_by_path_prefix(conn, prefix, 10000)?
     } else {
-        queries::get_all_nodes(&conn, 10000)?
+        queries::get_all_nodes(conn, 10000)?
     };
 
     let total_checked = nodes.len();
@@ -95,10 +104,10 @@ pub fn find_dead_code(
         }
 
         // Check incoming edges
-        let incoming = queries::count_incoming(&conn, &node.id).unwrap_or(0);
+        let incoming = queries::count_incoming(conn, &node.id).unwrap_or(0);
         if incoming == 0 {
             // Check if it's a container (has children) — containers are structural, not dead
-            let outgoing = queries::count_outgoing(&conn, &node.id).unwrap_or(0);
+            let outgoing = queries::count_outgoing(conn, &node.id).unwrap_or(0);
             let is_container = kind == "class" || kind == "struct" || kind == "enum";
             if is_container && outgoing > 0 {
                 continue;

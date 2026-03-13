@@ -56,9 +56,17 @@ pub fn analyze_impact(
     depth: u32,
 ) -> Result<ImpactResult, ImpactError> {
     let conn = storage::open_db(db_path)?;
+    analyze_impact_from_conn(&conn, symbol_id, depth)
+}
 
+/// Analyze the blast radius of changing a symbol from an existing connection.
+pub fn analyze_impact_from_conn(
+    conn: &rusqlite::Connection,
+    symbol_id: &str,
+    depth: u32,
+) -> Result<ImpactResult, ImpactError> {
     // Verify symbol exists
-    let _node = queries::get_node(&conn, symbol_id)?
+    let _node = queries::get_node(conn, symbol_id)?
         .ok_or_else(|| ImpactError::SymbolNotFound(symbol_id.into()))?;
 
     // Collect direct dependents
@@ -70,7 +78,7 @@ pub fn analyze_impact(
         overrides: Vec::new(),
     };
 
-    let direct_edges = queries::get_all_incoming(&conn, symbol_id, 500)?;
+    let direct_edges = queries::get_all_incoming(conn, symbol_id, 500)?;
     let mut direct_ids: HashSet<String> = HashSet::new();
 
     for edge in &direct_edges {
@@ -95,7 +103,7 @@ pub fn analyze_impact(
     for _level in 1..depth {
         let mut next_frontier = Vec::new();
         for id in &frontier {
-            let incoming = queries::get_all_incoming(&conn, id, 100).unwrap_or_default();
+            let incoming = queries::get_all_incoming(conn, id, 100).unwrap_or_default();
             for edge in incoming {
                 if all_affected.insert(edge.source.clone()) {
                     next_frontier.push(edge.source);
@@ -117,7 +125,7 @@ pub fn analyze_impact(
     let mut test_files: HashSet<String> = HashSet::new();
 
     for id in &all_affected {
-        if let Ok(Some(node)) = queries::get_node(&conn, id) {
+        if let Ok(Some(node)) = queries::get_node(conn, id) {
             let file = &node.location.file;
             if file.contains("/Tests/") || file.contains("Tests.swift") {
                 test_files.insert(file.clone());

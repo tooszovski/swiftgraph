@@ -41,9 +41,17 @@ pub fn detect_cycles(
     max_cycles: u32,
 ) -> Result<CycleResult, CycleError> {
     let conn = storage::open_db(db_path)?;
+    detect_cycles_from_conn(&conn, path_filter, max_cycles)
+}
 
+/// Detect file-level dependency cycles from an existing connection.
+pub fn detect_cycles_from_conn(
+    conn: &rusqlite::Connection,
+    path_filter: Option<&str>,
+    max_cycles: u32,
+) -> Result<CycleResult, CycleError> {
     // Build file-level dependency graph
-    let edges = queries::get_cross_file_edges(&conn, path_filter, 50000)?;
+    let edges = queries::get_cross_file_edges(conn, path_filter, 50000)?;
 
     let mut file_deps: HashMap<String, HashSet<String>> = HashMap::new();
     let mut all_files: HashSet<String> = HashSet::new();

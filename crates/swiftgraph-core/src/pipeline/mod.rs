@@ -68,6 +68,16 @@ pub fn index_directory_with_store(
     let _span = info_span!("index_directory", root = %source_root.display()).entered();
     let conn = storage::open_db(db_path)?;
 
+    // On force reindex, rebuild FTS content sync to avoid corruption
+    if force {
+        let _ = conn.execute_batch(
+            "DELETE FROM nodes; DELETE FROM edges; DELETE FROM files;
+             INSERT INTO node_fts(node_fts) VALUES('rebuild');",
+        );
+        // Rebuild trigram table if it exists
+        let _ = conn.execute_batch("INSERT INTO node_trigram(node_trigram) VALUES('rebuild');");
+    }
+
     // Load config for include/exclude globs
     let config = Config::load(source_root);
     let include_set = config.include_globset();

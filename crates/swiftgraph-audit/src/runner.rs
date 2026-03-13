@@ -87,10 +87,29 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
         .filter(|issue| issue.severity >= options.min_severity)
         .collect();
 
-    // Limit and sort
+    // Sort by severity (highest first)
     let mut issues = all_issues;
     issues.sort_by(|a, b| b.severity.cmp(&a.severity));
-    issues.truncate(options.max_issues);
+
+    // Per-category cap: ensure each category gets fair representation
+    if issues.len() > options.max_issues {
+        use std::collections::HashMap;
+        let mut cat_counts: HashMap<Category, usize> = HashMap::new();
+        let n_categories = issues
+            .iter()
+            .map(|i| i.category)
+            .collect::<std::collections::HashSet<_>>()
+            .len()
+            .max(1);
+        let per_cat_limit = (options.max_issues / n_categories).max(1);
+
+        issues.retain(|issue| {
+            let count = cat_counts.entry(issue.category).or_insert(0);
+            *count += 1;
+            *count <= per_cat_limit
+        });
+        issues.truncate(options.max_issues);
+    }
 
     Ok(AuditResult::from_issues(issues))
 }
@@ -166,7 +185,6 @@ fn collect_rules(options: &AuditOptions) -> Vec<Box<dyn AuditRule>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn detect_strong_delegate() {

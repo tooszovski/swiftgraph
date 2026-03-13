@@ -189,6 +189,7 @@ fn get_node_by_id() {
     let (_dir, db_path) = setup_test_db();
     let params = navigation::NodeParams {
         symbol: "usr:User".into(),
+        ..Default::default()
     };
     let node = navigation::get_node(&db_path, params).unwrap();
     assert!(node.is_some());
@@ -200,6 +201,7 @@ fn get_node_not_found() {
     let (_dir, db_path) = setup_test_db();
     let params = navigation::NodeParams {
         symbol: "usr:NonExistent".into(),
+        ..Default::default()
     };
     let node = navigation::get_node(&db_path, params).unwrap();
     assert!(node.is_none());

@@ -9,6 +9,7 @@ pub mod energy;
 pub mod memory;
 pub mod modernization;
 pub mod networking;
+pub mod performance;
 pub mod security;
 pub mod storage;
 pub mod swiftui_arch;

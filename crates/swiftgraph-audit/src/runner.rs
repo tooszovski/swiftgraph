@@ -178,6 +178,9 @@ fn collect_rules(options: &AuditOptions) -> Vec<Box<dyn AuditRule>> {
     if include_all || options.categories.contains(&Category::Modernization) {
         rules.extend(rules::modernization::all_rules());
     }
+    if include_all || options.categories.contains(&Category::SwiftPerformance) {
+        rules.extend(rules::performance::all_rules());
+    }
 
     rules
 }

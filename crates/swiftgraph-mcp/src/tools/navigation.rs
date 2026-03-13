@@ -82,17 +82,108 @@ pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
 }
 
 /// Parameters for single-node lookup.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 pub struct NodeParams {
     /// Symbol ID (USR) or name.
+    #[serde(default)]
     pub symbol: String,
+    /// Include source code snippet.
+    #[serde(default)]
+    pub include_code: bool,
+    /// Include relations (conformances, extensions, container).
+    #[serde(default)]
+    pub include_relations: bool,
 }
 
-/// Look up a single node by ID or name.
+/// Detailed node response with optional code and relations.
+#[derive(Debug, Serialize)]
+pub struct NodeDetailedResponse {
+    #[serde(flatten)]
+    pub node: GraphNode,
+    /// Source code snippet (if include_code=true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// Relations (if include_relations=true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relations: Option<NodeRelations>,
+}
+
+/// Relations of a node.
+#[derive(Debug, Serialize)]
+pub struct NodeRelations {
+    pub conformances: Vec<String>,
+    pub extensions: usize,
+    pub container: Option<String>,
+}
+
+/// Look up a single node by ID or name (simple variant, used by integration tests).
+#[allow(dead_code)]
 pub fn get_node(db_path: &Path, params: NodeParams) -> Result<Option<GraphNode>> {
     let conn = storage::open_db(db_path)?;
     let node = queries::get_node(&conn, &params.symbol)?;
     Ok(node)
+}
+
+/// Look up a node with optional code and relations.
+pub fn get_node_detailed(
+    db_path: &Path,
+    params: NodeParams,
+) -> Result<Option<NodeDetailedResponse>> {
+    let conn = storage::open_db(db_path)?;
+    let node = match queries::get_node(&conn, &params.symbol)? {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+
+    // Include source code if requested
+    let code = if params.include_code {
+        read_source_snippet(
+            &node.location.file,
+            node.location.line,
+            node.location.end_line,
+        )
+    } else {
+        None
+    };
+
+    // Include relations if requested
+    let relations = if params.include_relations {
+        let conformances = queries::get_conformances(&conn, &node.id, "conforms", 50)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.target)
+            .collect();
+        let extensions = queries::get_extensions(&conn, &node.id, 100)
+            .unwrap_or_default()
+            .len();
+        let container = node.container_usr.clone();
+        Some(NodeRelations {
+            conformances,
+            extensions,
+            container,
+        })
+    } else {
+        None
+    };
+
+    Ok(Some(NodeDetailedResponse {
+        node,
+        code,
+        relations,
+    }))
+}
+
+/// Read source lines from a file.
+fn read_source_snippet(file_path: &str, start_line: u32, end_line: Option<u32>) -> Option<String> {
+    let content = std::fs::read_to_string(file_path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start = start_line.saturating_sub(1) as usize;
+    let end = end_line.unwrap_or(start_line + 20).min(start_line + 50) as usize;
+    let end = end.min(lines.len());
+    if start >= lines.len() {
+        return None;
+    }
+    Some(lines[start..end].join("\n"))
 }
 
 /// Parameters for caller/callee/reference queries.
@@ -109,6 +200,40 @@ pub struct CallersParams {
 pub struct EdgesResponse {
     pub edges: Vec<GraphEdge>,
     pub count: usize,
+}
+
+/// Find transitive callers of a symbol via BFS.
+pub fn get_transitive_callers(db_path: &Path, symbol: &str, limit: u32) -> Result<EdgesResponse> {
+    let conn = storage::open_db(db_path)?;
+    let mut visited = std::collections::HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+    let mut all_edges = Vec::new();
+
+    queue.push_back(symbol.to_string());
+    visited.insert(symbol.to_string());
+
+    while let Some(current) = queue.pop_front() {
+        if all_edges.len() >= limit as usize {
+            break;
+        }
+        let callers = queries::get_callers(&conn, &current, limit)?;
+        for edge in callers {
+            if !visited.contains(&edge.source) {
+                visited.insert(edge.source.clone());
+                queue.push_back(edge.source.clone());
+            }
+            all_edges.push(edge);
+            if all_edges.len() >= limit as usize {
+                break;
+            }
+        }
+    }
+
+    let count = all_edges.len();
+    Ok(EdgesResponse {
+        edges: all_edges,
+        count,
+    })
 }
 
 /// Find all callers of a symbol (incoming `calls` edges).
@@ -447,6 +572,9 @@ pub fn parse_audit_options(
                     "accessibility" => Some(Category::Accessibility),
                     "testing" => Some(Category::Testing),
                     "modernization" => Some(Category::Modernization),
+                    "performance" | "swift-performance" | "swift_performance" => {
+                        Some(Category::SwiftPerformance)
+                    }
                     _ => None,
                 })
                 .collect()

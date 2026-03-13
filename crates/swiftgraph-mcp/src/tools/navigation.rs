@@ -288,6 +288,33 @@ pub fn get_cycles(
     Ok(result)
 }
 
+// --- v0.4: Coupling, Architecture, Imports ---
+
+pub fn get_coupling(
+    db_path: &Path,
+    depth: Option<u32>,
+    source_root: Option<&str>,
+) -> Result<analysis::coupling::CouplingResult> {
+    let result = analysis::coupling::analyze_coupling(db_path, depth.unwrap_or(2), source_root)?;
+    Ok(result)
+}
+
+pub fn get_architecture(
+    db_path: &Path,
+    expected: Option<&str>,
+) -> Result<analysis::architecture::ArchitectureResult> {
+    let result = analysis::architecture::analyze_architecture(db_path, expected)?;
+    Ok(result)
+}
+
+pub fn get_imports(
+    db_path: &Path,
+    path_filter: Option<&str>,
+) -> Result<analysis::imports::ImportsResult> {
+    let result = analysis::imports::analyze_imports(db_path, path_filter)?;
+    Ok(result)
+}
+
 // --- v0.3: Audit ---
 
 /// Parse audit options from string parameters.

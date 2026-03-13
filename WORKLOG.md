@@ -95,7 +95,7 @@
 - Reason: edges often reference SDK symbols (UIKit, Foundation) not in our index
 - `INSERT OR IGNORE` now works correctly on real projects
 
-### Integration Test: Production Project 
+### Integration Test: Production Project
 - XcodeGen project, 941 Swift files
 - **6824 nodes, 6140 edges** indexed via tree-sitter
 - Search, hierarchy, callers all verified

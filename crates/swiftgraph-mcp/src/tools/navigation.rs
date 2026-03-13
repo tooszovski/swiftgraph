@@ -24,11 +24,37 @@ pub struct SearchResponse {
 pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(20);
+    let kind = params.kind.as_deref();
+    let query = params.query.trim();
 
-    // Try FTS5 first, fallback to LIKE
-    let results = queries::search_nodes(&conn, &params.query, limit).or_else(|_| {
-        queries::find_nodes_by_name(&conn, &params.query, params.kind.as_deref(), limit)
-    })?;
+    // Handle wildcard / empty query as "list all"
+    let is_list_all = query.is_empty() || query == "*";
+
+    let results = if is_list_all {
+        // List all (optionally filtered by kind)
+        queries::find_nodes_by_name(&conn, "", kind, limit)?
+    } else {
+        // Try FTS5 with auto-prefix (append * for prefix matching)
+        let fts_query = if query.contains('*') || query.contains('"') {
+            query.to_string()
+        } else {
+            format!("{query}*")
+        };
+
+        let mut results = queries::search_nodes(&conn, &fts_query, limit).unwrap_or_default();
+
+        // Apply kind filter (FTS5 doesn't support it natively)
+        if let Some(k) = kind {
+            results.retain(|n| n.kind.as_str() == k);
+        }
+
+        // Fallback to LIKE if FTS5 returned nothing
+        if results.is_empty() {
+            results = queries::find_nodes_by_name(&conn, query, kind, limit)?;
+        }
+
+        results
+    };
 
     let total = results.len();
     Ok(SearchResponse { results, total })

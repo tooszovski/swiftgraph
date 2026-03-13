@@ -65,6 +65,14 @@ enum Command {
         #[arg(long, default_value = "30")]
         limit: u32,
     },
+    /// Find callees of a symbol
+    Callees {
+        /// Symbol name or USR
+        symbol: String,
+        /// Max results
+        #[arg(long, default_value = "30")]
+        limit: u32,
+    },
     /// Get type hierarchy
     Hierarchy {
         /// Symbol name or USR
@@ -243,6 +251,16 @@ async fn main() -> Result<()> {
                 limit: Some(limit),
             };
             let result = tools::navigation::get_callers(&db_path, params)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Callees { symbol, limit } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let params = tools::navigation::CallersParams {
+                symbol,
+                limit: Some(limit),
+            };
+            let result = tools::navigation::get_callees(&db_path, params)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Hierarchy {

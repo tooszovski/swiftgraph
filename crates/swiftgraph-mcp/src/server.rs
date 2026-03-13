@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use lru::LruCache;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::model::ServerCapabilities;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
@@ -723,6 +724,7 @@ impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
         info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, boundaries, audit, concurrency.".into());
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }
 }

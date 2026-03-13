@@ -1,92 +1,95 @@
 # SwiftGraph — Backlog
 
-## v0.1 — MVP: Graph (remaining)
+> Last verified against code: 2026-03-13
+> Status: v0.1–v0.5 all complete. Remaining items are improvements, infra, and bugs from testing.
 
-### P0 — Must-have for v0.1 release
+## Completed Milestones
 
-- [x] **libIndexStore C FFI bindings** — runtime-loaded (dlopen) bindings for 30+ `indexstore_*` functions, auto-discovers via xcrun
-- [x] **Index Store reader** — reads units/records into GraphNode/GraphEdge with relation mapping (calledBy, baseOf, overrideOf, childOf, extendedBy)
-- [x] **Semantic edge replacement** — pipeline prefers Index Store when available, falls back to tree-sitter (Hybrid/TreeSitter/IndexStore strategies)
-- [x] **`swiftgraph_files` MCP tool** — list indexed files with stats, filterable by path prefix
-- [x] **Real project integration test** — tested on ~/git/ios (941 files, 6824 nodes, 6140 edges)
-- [x] **Cross-file call edges** — tree-sitter second-pass call extraction + name resolution pipeline
+- [x] **v0.1 — MVP: Graph** — IndexStore FFI, tree-sitter, pipeline, 8 MCP tools, CLI
+- [x] **v0.2 — Intelligence** — context, impact, diff-impact, extensions, conformances
+- [x] **v0.3 — Audit Engine** — 19 rules (CONC/MEM/SEC), parallel runner, text/json/sarif
+- [x] **v0.4 — Analysis** — complexity, dead-code, cycles, coupling, architecture, imports, boundaries
+- [x] **v0.5 — Production** — 9 audit categories (SUI/ARCH/NRG/NET/COD/STR/A11Y/TST/MOD), SARIF, watch mode
 
-### P1 — Quality
-
-- [x] **Error messages for missing Index Store** — clear user-facing guidance when degrading to tree-sitter-only mode
-- [x] **CLI `serve` without `--mcp` flag** — provide useful help text or default behavior
-- [x] **Config file loading** — read `.swiftgraph/config.json` include/exclude globs during indexing
+**Current state**: 22 MCP tools, 18 CLI subcommands, 943 files indexed (~/git/ios), 7202 nodes, 43567 edges
 
 ---
 
-## v0.2 — Intelligence
+## Open Items — Bugs & Quick Fixes
 
-- [x] **`swiftgraph_context`** — task-based context builder: keyword extraction → FTS5 search → 2-level graph expansion → relevance ranking
-- [x] **`swiftgraph_impact`** — blast radius analysis for a symbol: direct/transitive callers, affected files, affected tests, risk level
-- [x] **`swiftgraph_diff_impact`** — git-based impact analysis: unstaged/staged/commit-range → changed symbols → blast radius
-- [x] **`swiftgraph_extensions`** — find all extensions of a type (including cross-module)
-- [x] **`swiftgraph_conformances`** — protocol conformance queries (who conforms, what does X conform to)
-- [ ] **FTS5 search improvements** — trigram tokenizer, prefix queries, ranking by symbol importance
+### P0 — Bugs found in testing (2026-03-13)
 
-> Note: FTS5 basic search and incremental reindex (SHA256) are already implemented in v0.1.
+- [ ] **FTS5 search: prefix matching** — `search "fetch"` returns 0 results because query is passed as-is to FTS5 MATCH. Need auto-`*` suffix for prefix matching and fallback to LIKE when FTS5 returns 0 results (not just on error).
+  - File: `crates/swiftgraph-core/src/storage/queries.rs:68-82` (search_nodes)
+  - File: `crates/swiftgraph-mcp/src/tools/navigation.rs:24-35` (fallback logic)
 
----
+- [ ] **FTS5 search: `--kind` filter ignored in FTS5 path** — `--kind` is only applied in the LIKE fallback (`find_nodes_by_name`), not when FTS5 succeeds. Need post-filter or joined query.
+  - File: `crates/swiftgraph-core/src/storage/queries.rs:102-131` (find_nodes_by_name has kind, search_nodes doesn't)
 
-## v0.3 — Audit Engine
+- [ ] **FTS5 search: wildcard `*` returns empty** — bare `*` is invalid FTS5 syntax, should be treated as "list all" (no WHERE clause or LIKE `%%`).
+  - File: `crates/swiftgraph-mcp/src/tools/navigation.rs:24-35`
 
-- [x] **Audit rule framework** — AuditRule trait, parallel runner (rayon), tree-sitter pattern matching, severity filtering, category grouping
-- [x] **Concurrency checks (CONC-001..004)** — missing @MainActor, unsafe Task capture, Task.detached actor isolation, actor hop in loop
-- [x] **Memory checks (MEM-001..004)** — closure retain cycles, strong delegates, timer leaks, observer leaks
-- [x] **Security checks (SEC-001..004)** — hardcoded secrets, insecure storage, sensitive logging, ATS bypass
-- [x] **`swiftgraph_audit` MCP tool** — categories, min_severity, path_filter, max_issues
-- [x] **CLI `swiftgraph audit`** — text/json/sarif output formats
-- [x] **Additional CONC rules (005..007)** — Sendable violations, stored Task without cancel, nonisolated self access
-- [x] **Additional MEM rules (005..006)** — KVO cleanup, PhotoKit accumulation
-- [x] **Additional SEC rules (005..006)** — injectable format strings, missing certificate pinning
-- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks (deferred)
+- [ ] **Add `callees` CLI subcommand** — MCP tool `swiftgraph_callees` exists (server.rs:279), but no CLI subcommand. Need `Callees` variant in Command enum.
+  - File: `crates/swiftgraph-mcp/src/main.rs` (Command enum, lines 20-188)
 
----
+- [ ] **Audit max_issues is global, not per-category** — `issues.truncate(max_issues)` is applied after collecting all categories. When running all 12 categories with default max_issues=100, categories later in the list may be entirely truncated.
+  - File: `crates/swiftgraph-audit/src/runner.rs:84-93`
 
-## v0.4 — Analysis
+### P1 — Quality improvements
 
-- [x] **`swiftgraph_complexity`** — fan-in/fan-out metrics per symbol/file, sorted by structural complexity score
-- [x] **`swiftgraph_dead_code`** — unreachable symbol detection (no incoming edges), excludes public API/tests/entry points
-- [x] **`swiftgraph_cycles`** — file-level dependency cycle detection via DFS
-- [x] **`swiftgraph_coupling`** — afferent/efferent coupling, instability, abstractness metrics between modules
-- [x] **`swiftgraph_architecture`** — auto-detect architectural pattern, verify conformance
-- [x] **`swiftgraph_imports`** — module dependency graph with visualization data
-- [x] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement
+- [ ] **Energy audit rules too narrow** — NRG-001..006 exist but find 0 issues on 943-file production project. Rules check literal patterns (e.g., `Timer` with interval < 1s, `startUpdatingLocation` without `activityType`) but real code uses wrappers/abstractions. Need broader matching: Timer.publish, DispatchSourceTimer, CLLocationManager patterns, background fetch intervals.
+  - File: `crates/swiftgraph-audit/src/rules/energy.rs` (6 rules, 333 lines)
+
+- [ ] **No critical-severity audit findings** — `audit --min-severity critical` returns 0 on real project. Only CONC-003 (Task.detached) and SEC-001 (hardcoded secrets) are critical. Verify these rules fire on real patterns.
+  - Files: `crates/swiftgraph-audit/src/rules/concurrency.rs`, `security.rs`
 
 ---
 
-## v0.5 — Production
+## Open Items — New Features
 
-### Additional audit categories
+### P1 — Search & Intelligence
 
-- [x] **SwiftUI performance (SUI-001..006)** — body complexity, unnecessary redraws, missing `Equatable`, heavy onAppear
-- [x] **SwiftUI architecture (ARCH-001..005)** — logic in views, massive view bodies, improper property wrapper usage
-- [x] **Energy (NRG-001..006)** — timer abuse, polling, continuous location, background mode misuse
-- [x] **Networking checks (NET-001..006)** — deprecated APIs, missing error handling, hardcoded URLs
-- [x] **Codable checks (COD-001..005)** — manual JSON, `try?` swallowing errors, date handling
-- [x] **Storage checks (STR-001..004)** — wrong directories, missing backup exclusions, file protection
-- [x] **Accessibility checks (A11Y-001..004)** — missing labels, Dynamic Type, color contrast
-- [x] **Testing checks (TST-001..005)** — flaky patterns, missing assertions, shared state
-- [x] **Modernization checks (MOD-001..005)** — deprecated APIs, migration opportunities (ObservableObject → @Observable)
+- [ ] **FTS5 ranking by symbol importance** — ORDER BY rank (BM25), weighted fields (name > qualified_name > signature), boost by fan-in/complexity score.
+  - File: `crates/swiftgraph-core/src/storage/queries.rs:68-82`
 
-### Infrastructure
+- [ ] **FTS5 trigram tokenizer** — for substring matching without prefix requirement. Requires `tokenize='trigram'` in CREATE VIRTUAL TABLE.
+  - File: `crates/swiftgraph-core/src/storage/schema.rs:70-77`
 
-- [x] **SARIF output** — CI/CD integration for audit results (GitHub Code Scanning, SonarQube)
-- [x] **Watch mode** — FSEvents-based auto-reindex on file changes
-- [ ] **Homebrew formula** — `brew install swiftgraph`
-- [ ] **In-memory graph cache** — optional LRU cache for hot-path queries, bypass SQLite for repeated lookups
-- [x] **Parallel audit execution** — rayon-based parallel rule evaluation across files
+### P2 — Infrastructure
+
+- [ ] **Homebrew formula** — `brew install swiftgraph`. Need Formula .rb file + tap repo.
+
+- [ ] **In-memory LRU cache** — optional cache layer for hot-path queries (search, callers, callees). Bypass SQLite for repeated lookups. No dependency added yet.
+
+### P3 — Deep Analysis
+
+- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks. Crate `crates/swiftgraph-parser/` does not exist yet. Would enable: macro expansion, type inference, full expression analysis.
 
 ---
 
-## Tech Debt / Cross-cutting
+## Open Items — Tech Debt
 
-- [x] Structured logging with `tracing` spans (pipeline + audit runner)
-- [ ] Benchmark suite for indexing throughput and query latency
-- [x] CI pipeline (GitHub Actions) — build, test, clippy, fmt
-- [ ] Integration test fixtures — small Swift projects per feature area
-- [x] Documentation — README with usage examples, architecture diagram
+- [ ] **Benchmark suite** — criterion-based benchmarks for indexing throughput and query latency. No `benches/` dir or criterion dependency exists.
+
+- [ ] **Integration test fixtures** — `tests/fixtures/` exists but is empty. Need small Swift projects per feature area (conformances, extensions, concurrency patterns, etc.)
+
+---
+
+## Summary: 14 open items
+
+| # | Priority | Item | Type |
+|---|----------|------|------|
+| 1 | P0 | FTS5 prefix matching (auto-`*` + fallback on 0 results) | Bug |
+| 2 | P0 | FTS5 `--kind` filter in both paths | Bug |
+| 3 | P0 | FTS5 wildcard `*` as "list all" | Bug |
+| 4 | P0 | Add `callees` CLI subcommand | Missing feature |
+| 5 | P0 | Audit max_issues per-category cap | Bug |
+| 6 | P1 | Energy audit rules — broader patterns | Quality |
+| 7 | P1 | Verify critical-severity rules fire | Quality |
+| 8 | P1 | FTS5 ranking (BM25 + importance) | Enhancement |
+| 9 | P1 | FTS5 trigram tokenizer | Enhancement |
+| 10 | P2 | Homebrew formula | Distribution |
+| 11 | P2 | In-memory LRU cache | Performance |
+| 12 | P3 | swift-syntax subprocess | New feature |
+| 13 | P3 | Benchmark suite (criterion) | Testing |
+| 14 | P3 | Integration test fixtures | Testing |

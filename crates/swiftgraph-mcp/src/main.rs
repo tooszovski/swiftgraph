@@ -208,7 +208,14 @@ async fn main() -> Result<()> {
             if mcp {
                 cmd_serve_mcp(root).await?;
             } else {
-                eprintln!("Use --mcp flag to start MCP server");
+                eprintln!("SwiftGraph MCP Server");
+                eprintln!();
+                eprintln!("Usage:");
+                eprintln!("  swiftgraph serve --mcp          Start MCP server (JSON-RPC over stdin/stdout)");
+                eprintln!("  swiftgraph serve --mcp --project /path/to/project");
+                eprintln!();
+                eprintln!("Configure in Claude Code settings.json:");
+                eprintln!("  {{\"mcpServers\": {{\"swiftgraph\": {{\"command\": \"swiftgraph\", \"args\": [\"serve\", \"--mcp\"]}}}}}}");
             }
         }
         Command::Search { query, kind, limit } => {
@@ -424,6 +431,15 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
             .ok()
             .and_then(|info| info.index_store_path)
     });
+
+    if store_path.is_none() {
+        eprintln!("⚠ No Index Store found — using tree-sitter fallback (less accurate).");
+        eprintln!("  To enable Index Store:");
+        eprintln!("    1. Build your project in Xcode (Product → Build)");
+        eprintln!("    2. Or run: swift build -index-store-path .build/index/store");
+        eprintln!("    3. Or specify: swiftgraph index --index-store-path /path/to/index/store");
+        eprintln!();
+    }
 
     let result = swiftgraph_core::pipeline::index_directory_with_store(
         &db_path,

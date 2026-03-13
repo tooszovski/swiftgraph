@@ -1,4 +1,5 @@
 pub mod analysis;
+pub mod config;
 pub mod graph;
 pub mod index_store;
 pub mod pipeline;

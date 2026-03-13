@@ -13,9 +13,9 @@
 
 ### P1 — Quality
 
-- [ ] **Error messages for missing Index Store** — clear user-facing guidance when degrading to tree-sitter-only mode
-- [ ] **CLI `serve` without `--mcp` flag** — provide useful help text or default behavior
-- [ ] **Config file loading** — read `.swiftgraph/config.json` include/exclude globs during indexing
+- [x] **Error messages for missing Index Store** — clear user-facing guidance when degrading to tree-sitter-only mode
+- [x] **CLI `serve` without `--mcp` flag** — provide useful help text or default behavior
+- [x] **Config file loading** — read `.swiftgraph/config.json` include/exclude globs during indexing
 
 ---
 
@@ -79,7 +79,7 @@
 - [x] **Watch mode** — FSEvents-based auto-reindex on file changes
 - [ ] **Homebrew formula** — `brew install swiftgraph`
 - [ ] **In-memory graph cache** — optional LRU cache for hot-path queries, bypass SQLite for repeated lookups
-- [ ] **Parallel audit execution** — rayon-based parallel rule evaluation across files
+- [x] **Parallel audit execution** — rayon-based parallel rule evaluation across files
 
 ---
 

@@ -8,7 +8,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::tools::{navigation, status};
+use crate::tools::{concurrency, navigation, status};
 
 /// LRU cache for MCP tool responses, keyed by (tool_name, params_hash).
 type ResponseCache = Arc<Mutex<LruCache<String, String>>>;
@@ -38,6 +38,10 @@ pub struct SearchToolParams {
 pub struct SymbolParams {
     /// Symbol ID (USR) or name
     pub symbol: String,
+    /// Include source code snippet (default false)
+    pub include_code: Option<bool>,
+    /// Include relations: conformances, extensions, container info (default false)
+    pub include_relations: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -46,6 +50,8 @@ pub struct SymbolLimitParams {
     pub symbol: String,
     /// Max results (default 30)
     pub limit: Option<u32>,
+    /// Include transitive callers/callees via BFS (default false)
+    pub transitive: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -166,7 +172,7 @@ pub struct BoundariesToolParams {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AuditToolParams {
-    /// Comma-separated categories to check (e.g. "concurrency,memory,security"). Empty = all
+    /// Comma-separated categories to check (e.g. "concurrency,memory,security,performance"). Empty = all
     pub categories: Option<String>,
     /// Minimum severity: "low", "medium", "high", "critical" (default "low")
     pub min_severity: Option<String>,
@@ -174,6 +180,15 @@ pub struct AuditToolParams {
     pub path_filter: Option<String>,
     /// Max issues to return (default 100)
     pub max_issues: Option<usize>,
+    /// Include fix suggestions in output (default true). When false, fix field is stripped from results.
+    #[serde(default)]
+    pub fix_suggestions: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ConcurrencyToolParams {
+    /// Symbol ID (USR) or name to analyze for concurrency patterns
+    pub symbol: String,
 }
 
 /// SwiftGraph MCP server holding project state, DB path, and response cache.
@@ -312,7 +327,7 @@ impl SwiftGraphServer {
         })
     }
 
-    /// Get detailed info about a symbol by its ID or name
+    /// Get detailed info about a symbol by its ID or name. Optionally include source code and relations.
     #[tool(name = "swiftgraph_node")]
     pub async fn swiftgraph_node(
         &self,
@@ -322,16 +337,18 @@ impl SwiftGraphServer {
         self.with_request_span("swiftgraph_node", || {
             let nav_params = navigation::NodeParams {
                 symbol: params.symbol,
+                include_code: params.include_code.unwrap_or(false),
+                include_relations: params.include_relations.unwrap_or(false),
             };
-            match navigation::get_node(&db_path, nav_params) {
-                Ok(Some(node)) => serde_json::to_string_pretty(&node).unwrap_or_default(),
+            match navigation::get_node_detailed(&db_path, nav_params) {
+                Ok(Some(resp)) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
                 Ok(None) => json!({"error": "symbol not found"}).to_string(),
                 Err(e) => json!({"error": e.to_string()}).to_string(),
             }
         })
     }
 
-    /// Find all callers of a symbol (compiler-accurate via USR)
+    /// Find all callers of a symbol (compiler-accurate via USR). Set transitive=true for BFS expansion.
     #[tool(name = "swiftgraph_callers")]
     pub async fn swiftgraph_callers(
         &self,
@@ -339,13 +356,24 @@ impl SwiftGraphServer {
     ) -> String {
         let db_path = self.db_path.clone();
         self.with_request_span("swiftgraph_callers", || {
-            let nav_params = navigation::CallersParams {
-                symbol: params.symbol,
-                limit: params.limit,
-            };
-            match navigation::get_callers(&db_path, nav_params) {
-                Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
-                Err(e) => json!({"error": e.to_string()}).to_string(),
+            if params.transitive.unwrap_or(false) {
+                match navigation::get_transitive_callers(
+                    &db_path,
+                    &params.symbol,
+                    params.limit.unwrap_or(30),
+                ) {
+                    Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+                    Err(e) => json!({"error": e.to_string()}).to_string(),
+                }
+            } else {
+                let nav_params = navigation::CallersParams {
+                    symbol: params.symbol,
+                    limit: params.limit,
+                };
+                match navigation::get_callers(&db_path, nav_params) {
+                    Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+                    Err(e) => json!({"error": e.to_string()}).to_string(),
+                }
             }
         })
     }
@@ -657,6 +685,32 @@ impl SwiftGraphServer {
                 params.max_issues,
             );
             match navigation::run_audit(&project_root, options) {
+                Ok(mut resp) => {
+                    // Strip fix suggestions if not requested
+                    if !params.fix_suggestions.unwrap_or(true) {
+                        for issue in &mut resp.issues {
+                            issue.fix = None;
+                        }
+                    }
+                    serde_json::to_string_pretty(&resp).unwrap_or_default()
+                }
+                Err(e) => json!({"error": e.to_string()}).to_string(),
+            }
+        })
+    }
+
+    /// Analyze concurrency annotations for a symbol — isolation, Sendable, cross-actor calls, mutable state
+    #[tool(name = "swiftgraph_concurrency")]
+    pub async fn swiftgraph_concurrency(
+        &self,
+        rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ConcurrencyToolParams>,
+    ) -> String {
+        let db_path = self.db_path.clone();
+        self.with_request_span("swiftgraph_concurrency", || {
+            let c_params = concurrency::ConcurrencyParams {
+                symbol: params.symbol,
+            };
+            match concurrency::analyze_concurrency(&db_path, c_params) {
                 Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
                 Err(e) => json!({"error": e.to_string()}).to_string(),
             }
@@ -668,7 +722,7 @@ impl SwiftGraphServer {
 impl ServerHandler for SwiftGraphServer {
     fn get_info(&self) -> rmcp::model::ServerInfo {
         let mut info = rmcp::model::ServerInfo::default();
-        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, boundaries, audit.".into());
+        info.instructions = Some("SwiftGraph: compiler-accurate Swift code graph MCP server. Tools: status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, boundaries, audit, concurrency.".into());
         info
     }
 }

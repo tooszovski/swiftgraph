@@ -159,11 +159,11 @@ Rust (pipeline) → spawns → swiftgraph-parser (Swift CLI) → JSON stdout →
 
 ---
 
-## Recommended Order
+## Status: ALL COMPLETE (2026-03-13)
 
-| # | Item | Size | Impact |
+| # | Item | Size | Status |
 |---|------|------|--------|
-| 1 | P3-1: TODOs in queries.rs | S | Fixes dead_code bug |
-| 2 | P3-2: Request-ID tracing | S | Observability |
-| 3 | P3-3: Property testing | M | Algorithm correctness |
-| 4 | P3-4: swift-syntax subprocess | XL | Deep analysis capability |
+| 1 | P3-1: TODOs in queries.rs | S | DONE (commit 3c6d15c) |
+| 2 | P3-2: Request-ID tracing | S | DONE (commit 3c6d15c) |
+| 3 | P3-3: Property testing | M | DONE (commit 3c6d15c, 11 proptests) |
+| 4 | P3-4: swift-syntax subprocess | XL | DONE Phase A (commit 1669909) |

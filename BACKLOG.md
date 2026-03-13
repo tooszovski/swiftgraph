@@ -1,7 +1,7 @@
 # SwiftGraph — Backlog
 
 > Last verified against code: 2026-03-13
-> Status: v0.1–v0.5 all complete. 13/14 items closed. 1 remaining (swift-syntax subprocess).
+> Status: v0.1–v0.5 all complete. 14/14 items closed. All done.
 
 ## Completed Milestones
 
@@ -11,7 +11,7 @@
 - [x] **v0.4 — Analysis** — complexity, dead-code, cycles, coupling, architecture, imports, boundaries
 - [x] **v0.5 — Production** — 9 audit categories (SUI/ARCH/NRG/NET/COD/STR/A11Y/TST/MOD), SARIF, watch mode
 
-**Current state**: 22 MCP tools, 19 CLI subcommands, 943 files indexed (~/git/ios), 7202 nodes, 43567 edges
+**Current state**: 23 MCP tools (+ concurrency), 19 CLI subcommands, 73 audit rules (+ PERF-001..006), swift-syntax parser Phase A complete
 
 ---
 
@@ -41,9 +41,12 @@
 - [x] **Homebrew formula** — `Formula/swiftgraph.rb` with SHA256 placeholder. Needs tap repo for distribution.
 - [x] **In-memory LRU cache** — 256-entry `ResponseCache` in `server.rs` for hot-path queries (search, callers, callees). Invalidated on reindex.
 
-### P3 — Deep Analysis
+### P3 — Deep Analysis — ALL DONE ✓
 
-- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks. Crate `crates/swiftgraph-parser/` does not exist yet. Would enable: macro expansion, type inference, full expression analysis.
+- [x] **P3-1: sub_kind/access_level parsing** — Parse SymbolSubKind and AccessLevel from stored Debug strings
+- [x] **P3-2: Request-ID tracing** — UUID per MCP tool request with tracing spans
+- [x] **P3-3: Property testing** — 11 proptest tests for cycles, impact, dead_code, complexity
+- [x] **swift-syntax subprocess (Phase A)** — `swiftgraph-parser` Swift CLI extracting declarations with swift-syntax 600+. Rust integration with graceful degradation. Pipeline enrichment step.
 
 ---
 
@@ -54,7 +57,15 @@
 
 ---
 
-## Summary: 13 closed, 1 open
+### P4 — Spec Compliance (2026-03-13) — ALL DONE ✓
+
+- [x] **PERF-001..006 audit rules** — Swift performance: unnecessary-copy, excessive-arc, existential-overhead, collection-no-reserve, actor-hop-overhead, large-value-type
+- [x] **swiftgraph_concurrency MCP tool** — Isolation, Sendable, cross-actor calls, mutable state analysis
+- [x] **Spec param gaps** — include_code, include_relations on node; transitive on callers; fix_suggestions on audit
+
+---
+
+## Summary: 14 closed, 0 open — ALL DONE
 
 | # | Priority | Item | Type | Status |
 |---|----------|------|------|--------|
@@ -69,6 +80,6 @@
 | ~~9~~ | ~~P1~~ | ~~FTS5 trigram tokenizer~~ | ~~Enhancement~~ | DONE |
 | ~~10~~ | ~~P2~~ | ~~Homebrew formula~~ | ~~Distribution~~ | DONE |
 | ~~11~~ | ~~P2~~ | ~~In-memory LRU cache~~ | ~~Performance~~ | DONE |
-| 12 | P3 | swift-syntax subprocess | New feature | DEFERRED |
+| ~~12~~ | ~~P3~~ | ~~swift-syntax subprocess~~ | ~~New feature~~ | DONE (Phase A) |
 | ~~13~~ | ~~P3~~ | ~~Benchmark suite~~ | ~~Testing~~ | DONE |
 | ~~14~~ | ~~P3~~ | ~~Integration test fixtures~~ | ~~Testing~~ | DONE |

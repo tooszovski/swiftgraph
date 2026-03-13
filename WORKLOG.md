@@ -334,3 +334,62 @@
 status, reindex, search, node, callers, callees, references, hierarchy, files,
 extensions, conformances, context, impact, diff_impact, complexity, dead_code,
 cycles, coupling, architecture, imports, audit
+
+---
+
+## Session 6: 2026-03-13 — P3 Completion, PERF Rules, Concurrency Tool, swift-syntax
+
+### P3-1/2/3: Previously Implemented (commit 3c6d15c)
+- P3-1: Parse SymbolSubKind and AccessLevel from DB
+- P3-2: UUID request-ID tracing spans on all 22 MCP tool handlers
+- P3-3: 11 proptest property-based tests + test_helpers graph generator
+
+### Task 1: PERF-001..006 Swift Performance Audit Rules
+- Created `crates/swiftgraph-audit/src/rules/performance.rs` (6 rules)
+- PERF-001: unnecessary-copy (large struct >3 props without borrowing/consuming)
+- PERF-002: excessive-arc ([weak self] + immediate guard let self)
+- PERF-003: existential-overhead (any Protocol in collections)
+- PERF-004: collection-no-reserve (.append in loop without reserveCapacity)
+- PERF-005: actor-hop-overhead (await in tight loop)
+- PERF-006: large-value-type (struct >5 props or with arrays)
+- Registered in runner.rs and category parser
+
+### Task 2: swiftgraph_concurrency MCP Tool (23rd tool)
+- Created `crates/swiftgraph-mcp/src/tools/concurrency.rs`
+- Analyzes: isolation context, Sendable conformance, cross-actor calls, mutable state
+- Generates warnings for: unknown isolation, unprotected state, @Published without MainActor
+
+### Task 3: Spec Parameter Gaps
+- `swiftgraph_node`: added include_code (reads source file), include_relations (conformances, extensions, container)
+- `swiftgraph_callers`: added transitive param (BFS expansion)
+- `swiftgraph_audit`: added fix_suggestions param (strips fix field when false)
+
+### Task 4: swift-syntax Subprocess Phase A
+- **Swift side** (crates/swiftgraph-parser/):
+  - Package.swift: swift-syntax 600+ dependency
+  - ASTVisitor.swift: SyntaxVisitor for class/struct/enum/protocol/actor/function/extension/typeAlias
+  - Models.swift: Codable ParseResult/Declaration types
+  - main.swift: CLI entry point, JSON output
+  - Successfully builds and parses Swift files
+- **Rust side** (crates/swiftgraph-core/src/swift_syntax/):
+  - find_parser(): 4-location search chain (env, adjacent, workspace, PATH)
+  - parse_file(): subprocess invocation, JSON deserialization
+  - Pipeline integration: optional enrichment step after tree-sitter
+  - Graceful degradation: if parser not found, pipeline continues
+
+### Commits — 4 new
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `3c6d15c` | feat(core) | P3-1 sub_kind/access_level, P3-2 request tracing, P3-3 property tests |
+| `f1c118a` | feat(audit,mcp) | PERF rules, concurrency tool, spec param gaps |
+| `1669909` | feat(parser) | swift-syntax subprocess Phase A |
+| TBD | chore | Update docs and backlog |
+
+### Tests — 48/48 passing (all)
+### Quality Gates — clippy clean, fmt clean, all tests pass
+
+### Final Stats
+- **23 MCP tools** (status, reindex, search, node, callers, callees, references, hierarchy, files, extensions, conformances, context, impact, diff_impact, complexity, dead_code, cycles, coupling, architecture, imports, boundaries, audit, concurrency)
+- **73 audit rules** across 13 categories
+- **48 tests** passing
+- **swift-syntax parser** building and parsing correctly

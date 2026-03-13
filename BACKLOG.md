@@ -85,8 +85,8 @@
 
 ## Tech Debt / Cross-cutting
 
-- [ ] Structured logging with `tracing` spans (currently only stderr init)
+- [x] Structured logging with `tracing` spans (pipeline + audit runner)
 - [ ] Benchmark suite for indexing throughput and query latency
-- [ ] CI pipeline (GitHub Actions) — build, test, clippy, fmt
+- [x] CI pipeline (GitHub Actions) — build, test, clippy, fmt
 - [ ] Integration test fixtures — small Swift projects per feature area
-- [ ] Documentation — README with usage examples, architecture diagram
+- [x] Documentation — README with usage examples, architecture diagram

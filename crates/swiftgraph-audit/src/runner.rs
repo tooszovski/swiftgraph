@@ -4,6 +4,7 @@ use std::path::Path;
 
 use rayon::prelude::*;
 use thiserror::Error;
+use tracing::{info, info_span};
 use walkdir::WalkDir;
 
 use crate::engine::{AuditIssue, AuditResult, Category, Severity};
@@ -43,8 +44,19 @@ impl Default for AuditOptions {
 
 /// Run audit on a project directory.
 pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditResult, RunnerError> {
+    let _span = info_span!("audit", root = %project_root.display()).entered();
+
     // Collect all rules
     let all_rules = collect_rules(options);
+    info!(
+        "{} rules loaded across {} categories",
+        all_rules.len(),
+        if options.categories.is_empty() {
+            "all"
+        } else {
+            "selected"
+        }
+    );
 
     // Find Swift files
     let swift_files: Vec<_> = WalkDir::new(project_root)

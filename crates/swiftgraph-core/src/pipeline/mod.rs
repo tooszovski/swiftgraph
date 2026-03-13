@@ -3,7 +3,7 @@ use std::path::Path;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, info_span, warn};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -65,6 +65,7 @@ pub fn index_directory_with_store(
     force: bool,
     index_store_path: Option<&Path>,
 ) -> Result<IndexResult, PipelineError> {
+    let _span = info_span!("index_directory", root = %source_root.display()).entered();
     let conn = storage::open_db(db_path)?;
 
     // Load config for include/exclude globs

@@ -234,6 +234,134 @@ fn is_property_assignment(node: tree_sitter::Node, source: &str) -> bool {
     text.contains("= ") || node.kind() == "assignment"
 }
 
+/// MEM-005: KVO observation not removed.
+pub struct KvoLeak;
+
+impl AuditRule for KvoLeak {
+    fn id(&self) -> &str {
+        "MEM-005"
+    }
+    fn name(&self) -> &str {
+        "kvo-observer-leak"
+    }
+    fn category(&self) -> Category {
+        Category::Memory
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find calls to observe(_:options:changeHandler:) or addObserver(_:forKeyPath:...)
+        let calls = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains(".observe(") || text.contains("addObserver(")
+        });
+
+        for call in calls {
+            let text = node_text(call, ctx.source);
+            // Modern KVO (observe) returns a token — check if it's stored
+            if text.contains(".observe(") {
+                // Check if the result is assigned to a property
+                if let Some(parent) = call.parent() {
+                    let parent_text = node_text(parent, ctx.source);
+                    if !parent_text.contains("= ") && !parent_text.contains("let ") {
+                        issues.push(AuditIssue {
+                            id: format!("{}:{}", self.id(), ctx.file_path),
+                            category: self.category(),
+                            severity: self.severity(),
+                            rule: self.id().to_string(),
+                            message: "KVO observation result not stored — will be immediately invalidated".into(),
+                            file: ctx.file_path.to_string(),
+                            line: call.start_position().row as u32 + 1,
+                            symbol: None,
+                            fix: Some("Store the NSKeyValueObservation token in a property".into()),
+                        });
+                    }
+                }
+            }
+
+            // Legacy KVO: addObserver without matching removeObserver
+            if text.contains("addObserver(") && !ctx.source.contains("removeObserver(") {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "addObserver() without matching removeObserver() — KVO leak".into(),
+                    file: ctx.file_path.to_string(),
+                    line: call.start_position().row as u32 + 1,
+                    symbol: None,
+                    fix: Some(
+                        "Call removeObserver() in deinit or use modern KVO with observation tokens"
+                            .into(),
+                    ),
+                });
+            }
+        }
+
+        issues
+    }
+}
+
+/// MEM-006: PHAsset/PHImageManager request accumulation without cancellation.
+pub struct PhotoKitAccumulation;
+
+impl AuditRule for PhotoKitAccumulation {
+    fn id(&self) -> &str {
+        "MEM-006"
+    }
+    fn name(&self) -> &str {
+        "photokit-accumulation"
+    }
+    fn category(&self) -> Category {
+        Category::Memory
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find PHImageManager.requestImage calls
+        let calls = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains("requestImage(") || text.contains("requestAVAsset(")
+        });
+
+        for call in calls {
+            // Check if cancelImageRequest is called anywhere in the file
+            if !ctx.source.contains("cancelImageRequest(") {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "PHImageManager request without cancelImageRequest — may accumulate memory in scroll contexts".into(),
+                    file: ctx.file_path.to_string(),
+                    line: call.start_position().row as u32 + 1,
+                    symbol: None,
+                    fix: Some("Store the PHImageRequestID and cancel previous requests before starting new ones".into()),
+                });
+                break; // Only one issue per file
+            }
+        }
+
+        issues
+    }
+}
+
 /// All memory rules.
 pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
     vec![
@@ -241,5 +369,7 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(StrongDelegate),
         Box::new(TimerLeak),
         Box::new(ObserverLeak),
+        Box::new(KvoLeak),
+        Box::new(PhotoKitAccumulation),
     ]
 }

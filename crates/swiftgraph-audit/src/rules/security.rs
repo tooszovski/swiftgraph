@@ -3,7 +3,7 @@
 use regex::Regex;
 
 use crate::engine::{AuditIssue, Category, Severity};
-use crate::rules::{AuditRule, FileContext};
+use crate::rules::{decl_name, find_descendants, node_text, AuditRule, FileContext};
 
 /// SEC-001: Hardcoded secrets — API keys, tokens, passwords in string literals.
 pub struct HardcodedSecrets;
@@ -260,6 +260,114 @@ impl AuditRule for AtsBypass {
     }
 }
 
+/// SEC-005: Injectable format strings (String(format:) with user input).
+pub struct InjectableFormatString;
+
+impl AuditRule for InjectableFormatString {
+    fn id(&self) -> &str {
+        "SEC-005"
+    }
+    fn name(&self) -> &str {
+        "injectable-format-string"
+    }
+    fn category(&self) -> Category {
+        Category::Security
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        let calls = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let text = node_text(node, src);
+            // Detect String(format:) or NSString(format:) with non-literal first argument
+            (text.contains("String(format:") || text.contains("NSString(format:"))
+                && !text.contains("format: \"")
+        });
+
+        for call in calls {
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: "String(format:) with non-literal format argument — potential format string injection".into(),
+                file: ctx.file_path.to_string(),
+                line: call.start_position().row as u32 + 1,
+                symbol: None,
+                fix: Some("Use string interpolation instead, or ensure the format string is a compile-time literal".into()),
+            });
+        }
+
+        issues
+    }
+}
+
+/// SEC-006: Missing certificate pinning for sensitive endpoints.
+pub struct MissingCertPinning;
+
+impl AuditRule for MissingCertPinning {
+    fn id(&self) -> &str {
+        "SEC-006"
+    }
+    fn name(&self) -> &str {
+        "missing-cert-pinning"
+    }
+    fn category(&self) -> Category {
+        Category::Security
+    }
+    fn severity(&self) -> Severity {
+        Severity::High
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Detect URLSessionDelegate implementations without certificate validation
+        let class_decls = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "class_declaration" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains("URLSessionDelegate") || text.contains("URLSessionTaskDelegate")
+        });
+
+        for decl in class_decls {
+            let text = node_text(decl, ctx.source);
+            let name = decl_name(decl, ctx.source).unwrap_or_default();
+
+            // Check for didReceive challenge handler
+            if text.contains("urlSession") && text.contains("didReceive") {
+                // Check if it accepts all certificates (completionHandler(.useCredential, ...))
+                if text.contains(".useCredential") && !text.contains("SecTrust") {
+                    issues.push(AuditIssue {
+                        id: format!("{}:{}", self.id(), ctx.file_path),
+                        category: self.category(),
+                        severity: self.severity(),
+                        rule: self.id().to_string(),
+                        message: format!(
+                            "`{name}` accepts credentials without certificate validation — bypasses TLS"
+                        ),
+                        file: ctx.file_path.to_string(),
+                        line: decl.start_position().row as u32 + 1,
+                        symbol: Some(name),
+                        fix: Some("Validate the server certificate against known pins using SecTrust".into()),
+                    });
+                }
+            }
+        }
+
+        issues
+    }
+}
+
 /// All security rules.
 pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
     vec![
@@ -267,5 +375,7 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(InsecureStorage),
         Box::new(SensitiveLogging),
         Box::new(AtsBypass),
+        Box::new(InjectableFormatString),
+        Box::new(MissingCertPinning),
     ]
 }

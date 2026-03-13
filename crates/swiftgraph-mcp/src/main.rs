@@ -161,6 +161,12 @@ enum Command {
         #[arg(long)]
         path: Option<String>,
     },
+    /// Check architecture boundaries
+    Boundaries {
+        /// Path to boundary config JSON file
+        #[arg(long)]
+        config: PathBuf,
+    },
     /// Run static analysis audit
     Audit {
         /// Comma-separated categories: concurrency, memory, security (empty = all)
@@ -344,6 +350,15 @@ async fn main() -> Result<()> {
             let root = get_project_root(None);
             let db_path = root.join(".swiftgraph/db.sqlite");
             let result = tools::navigation::get_imports(&db_path, path.as_deref())?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Command::Boundaries { config } => {
+            let root = get_project_root(None);
+            let db_path = root.join(".swiftgraph/db.sqlite");
+            let config_str = std::fs::read_to_string(&config).unwrap_or_else(|e| {
+                panic!("Failed to read boundary config {}: {e}", config.display())
+            });
+            let result = tools::navigation::get_boundaries(&db_path, &config_str)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Audit {

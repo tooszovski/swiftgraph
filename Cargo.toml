@@ -53,3 +53,6 @@ sha2 = "0.10"
 # Path handling
 walkdir = "2"
 globset = "0.4"
+
+# Filesystem watching
+notify = "7"

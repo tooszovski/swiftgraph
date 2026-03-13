@@ -9,6 +9,7 @@
 - [x] **Semantic edge replacement** — pipeline prefers Index Store when available, falls back to tree-sitter (Hybrid/TreeSitter/IndexStore strategies)
 - [x] **`swiftgraph_files` MCP tool** — list indexed files with stats, filterable by path prefix
 - [x] **Real project integration test** — tested on ~/git/ios (941 files, 6824 nodes, 6140 edges)
+- [x] **Cross-file call edges** — tree-sitter second-pass call extraction + name resolution pipeline
 
 ### P1 — Quality
 
@@ -38,11 +39,11 @@
 - [x] **Memory checks (MEM-001..004)** — closure retain cycles, strong delegates, timer leaks, observer leaks
 - [x] **Security checks (SEC-001..004)** — hardcoded secrets, insecure storage, sensitive logging, ATS bypass
 - [x] **`swiftgraph_audit` MCP tool** — categories, min_severity, path_filter, max_issues
-- [x] **CLI `swiftgraph audit`** — text/json output formats
-- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks (deferred to v0.5)
-- [ ] **Additional CONC rules (005..007)** — Sendable violations, stored Task without weak capture, nonisolated self access
-- [ ] **Additional MEM rules (005..006)** — KVO cleanup, PhotoKit accumulation
-- [ ] **Additional SEC rules (005..006)** — injectable format strings, missing certificate pinning
+- [x] **CLI `swiftgraph audit`** — text/json/sarif output formats
+- [x] **Additional CONC rules (005..007)** — Sendable violations, stored Task without cancel, nonisolated self access
+- [x] **Additional MEM rules (005..006)** — KVO cleanup, PhotoKit accumulation
+- [x] **Additional SEC rules (005..006)** — injectable format strings, missing certificate pinning
+- [ ] **swift-syntax subprocess** — `swiftgraph-parser` Swift CLI for deeper AST checks (deferred)
 
 ---
 
@@ -51,10 +52,10 @@
 - [x] **`swiftgraph_complexity`** — fan-in/fan-out metrics per symbol/file, sorted by structural complexity score
 - [x] **`swiftgraph_dead_code`** — unreachable symbol detection (no incoming edges), excludes public API/tests/entry points
 - [x] **`swiftgraph_cycles`** — file-level dependency cycle detection via DFS
-- [ ] **`swiftgraph_coupling`** — afferent/efferent coupling, instability, abstractness metrics between modules
-- [ ] **`swiftgraph_architecture`** — auto-detect architectural pattern, verify conformance
+- [x] **`swiftgraph_coupling`** — afferent/efferent coupling, instability, abstractness metrics between modules
+- [x] **`swiftgraph_architecture`** — auto-detect architectural pattern, verify conformance
+- [x] **`swiftgraph_imports`** — module dependency graph with visualization data
 - [ ] **`swiftgraph_boundaries`** — configurable architecture boundary enforcement
-- [ ] **`swiftgraph_imports`** — module dependency graph with visualization data
 
 ---
 
@@ -74,8 +75,8 @@
 
 ### Infrastructure
 
-- [ ] **SARIF output** — CI/CD integration for audit results (GitHub Code Scanning, SonarQube)
-- [ ] **Watch mode** — FSEvents-based auto-reindex on file changes
+- [x] **SARIF output** — CI/CD integration for audit results (GitHub Code Scanning, SonarQube)
+- [x] **Watch mode** — FSEvents-based auto-reindex on file changes
 - [ ] **Homebrew formula** — `brew install swiftgraph`
 - [ ] **In-memory graph cache** — optional LRU cache for hot-path queries, bypass SQLite for repeated lookups
 - [ ] **Parallel audit execution** — rayon-based parallel rule evaluation across files

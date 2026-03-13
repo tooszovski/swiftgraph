@@ -267,3 +267,70 @@
 
 ### Quality Gates
 - clippy clean, fmt clean, 15/15 tests pass
+
+---
+
+## Session 4: 2026-03-13 — Cross-File Edges, v0.4 Completion, Audit Rules, Infrastructure
+
+### Critical Fix: Cross-File Call Edges
+- Root cause: tree-sitter parser produced zero call edges (only contains + conformsTo)
+- **Solution**: Second-pass call extraction in tree-sitter parser
+  - `extract_calls()` traverses AST for `call_expression` nodes
+  - `extract_call_target()` handles direct calls + navigation expressions
+  - `extract_extension_target()` for ExtendsType edges
+  - Fixed extension detection: `class_declaration` with `extension` keyword → `SymbolKind::Extension`
+- **Name resolution pipeline pass**: resolves `name::functionName` targets to real node IDs
+  - Before: 6,140 edges (contains + conformsTo only)
+  - After: **43,567 edges** (27,919 calls + 13,298 contains + 2,069 conformsTo + 281 extendsType)
+
+### v0.4 Analysis — Completed
+- `swiftgraph_coupling` — Ca/Ce, instability, abstractness, distance from main sequence
+- `swiftgraph_architecture` — auto-detect MVVM/VIPER/TCA/MVC with evidence scoring
+- `swiftgraph_imports` — module dependency graph from imports
+
+### Additional Audit Rules — 7 new (19 total)
+| ID | Category | Severity | Description |
+|----|----------|----------|-------------|
+| CONC-005 | Concurrency | High | Non-Sendable class with mutable state near Task |
+| CONC-006 | Concurrency | Medium | Stored Task without .cancel() |
+| CONC-007 | Concurrency | High | nonisolated function accessing self |
+| MEM-005 | Memory | Medium | KVO observation not stored / addObserver without removeObserver |
+| MEM-006 | Memory | Medium | PHImageManager request without cancel |
+| SEC-005 | Security | Medium | String(format:) with non-literal argument |
+| SEC-006 | Security | High | URLSessionDelegate accepting credentials without SecTrust |
+
+### v0.5 Infrastructure
+- **SARIF v2.1.0 output** — `swiftgraph audit --format sarif`
+- **Watch mode** — `swiftgraph watch` with FSEvents, configurable debounce
+
+### Integration Test: Production Project (943 files)
+- 7,202 nodes, 43,567 edges (27,919 calls)
+- Coupling: Sources/Flows Ce=6, Sources/Models Ca=5
+- Architecture: MVVM+Coordinator (179 VMs, 16 coordinators, 29 routers)
+- Imports: 25 modules (Foundation=468, SwiftUI=410, Combine=89)
+- Audit: 68 findings across 19 rules
+- Cycles: real dependency cycles now detected
+
+### Commits — 4 new (23 total)
+
+| Commit | Scope | Description |
+|--------|-------|-------------|
+| `b4f003b` | feat(core) | Call edge extraction + name resolution for cross-file edges |
+| `9711b95` | feat(core+mcp) | Coupling, architecture, imports — completes v0.4 |
+| `bc7b467` | feat(audit) | 7 new audit rules (CONC/MEM/SEC 005-007) |
+| `8c7225b` | feat(infra) | SARIF output + watch mode |
+
+### Tests — 17/17 passing (2 new)
+
+| # | Test | Module | Verifies |
+|---|------|--------|----------|
+| 16 | `extract_call_edges` | tree_sitter | Call edges from function calls |
+| 17 | `extract_extension_edges` | tree_sitter | ExtendsType from extensions |
+
+### Quality Gates
+- clippy clean, fmt clean, 17/17 tests pass
+
+### MCP Tools — 21 total
+status, reindex, search, node, callers, callees, references, hierarchy, files,
+extensions, conformances, context, impact, diff_impact, complexity, dead_code,
+cycles, coupling, architecture, imports, audit

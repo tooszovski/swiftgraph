@@ -2,9 +2,18 @@
 //!
 //! Each rule operates on Swift source text + tree-sitter AST and returns findings.
 
+pub mod accessibility;
+pub mod codable;
 pub mod concurrency;
+pub mod energy;
 pub mod memory;
+pub mod modernization;
+pub mod networking;
 pub mod security;
+pub mod storage;
+pub mod swiftui_arch;
+pub mod swiftui_perf;
+pub mod testing;
 
 use crate::engine::{AuditIssue, Category, Severity};
 use tree_sitter::{Node, Parser, Tree};

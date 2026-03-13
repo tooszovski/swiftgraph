@@ -63,15 +63,15 @@
 
 ### Additional audit categories
 
-- [ ] **SwiftUI performance (SUI-001..006)** — body complexity, unnecessary redraws, missing `Equatable`, heavy onAppear
-- [ ] **SwiftUI architecture (ARCH-001..005)** — logic in views, massive view bodies, improper property wrapper usage
-- [ ] **Energy (NRG-001..006)** — timer abuse, polling, continuous location, background mode misuse
-- [ ] **Networking checks** — deprecated APIs, missing error handling, hardcoded URLs
-- [ ] **Codable checks** — manual JSON, `try?` swallowing errors, date handling
-- [ ] **Storage checks** — wrong directories, missing backup exclusions, file protection
-- [ ] **Accessibility checks** — missing labels, Dynamic Type, color contrast
-- [ ] **Testing checks** — flaky patterns, missing assertions, shared state
-- [ ] **Modernization checks** — deprecated APIs, migration opportunities (ObservableObject → @Observable)
+- [x] **SwiftUI performance (SUI-001..006)** — body complexity, unnecessary redraws, missing `Equatable`, heavy onAppear
+- [x] **SwiftUI architecture (ARCH-001..005)** — logic in views, massive view bodies, improper property wrapper usage
+- [x] **Energy (NRG-001..006)** — timer abuse, polling, continuous location, background mode misuse
+- [x] **Networking checks (NET-001..006)** — deprecated APIs, missing error handling, hardcoded URLs
+- [x] **Codable checks (COD-001..005)** — manual JSON, `try?` swallowing errors, date handling
+- [x] **Storage checks (STR-001..004)** — wrong directories, missing backup exclusions, file protection
+- [x] **Accessibility checks (A11Y-001..004)** — missing labels, Dynamic Type, color contrast
+- [x] **Testing checks (TST-001..005)** — flaky patterns, missing assertions, shared state
+- [x] **Modernization checks (MOD-001..005)** — deprecated APIs, migration opportunities (ObservableObject → @Observable)
 
 ### Infrastructure
 

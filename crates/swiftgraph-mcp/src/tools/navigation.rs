@@ -331,6 +331,19 @@ pub fn parse_audit_options(
                     "concurrency" => Some(Category::Concurrency),
                     "memory" => Some(Category::Memory),
                     "security" => Some(Category::Security),
+                    "swiftui-performance" | "swiftui_performance" => {
+                        Some(Category::SwiftuiPerformance)
+                    }
+                    "swiftui-architecture" | "swiftui_architecture" => {
+                        Some(Category::SwiftuiArchitecture)
+                    }
+                    "networking" => Some(Category::Networking),
+                    "codable" => Some(Category::Codable),
+                    "energy" => Some(Category::Energy),
+                    "storage" => Some(Category::Storage),
+                    "accessibility" => Some(Category::Accessibility),
+                    "testing" => Some(Category::Testing),
+                    "modernization" => Some(Category::Modernization),
                     _ => None,
                 })
                 .collect()

@@ -120,6 +120,33 @@ fn collect_rules(options: &AuditOptions) -> Vec<Box<dyn AuditRule>> {
     if include_all || options.categories.contains(&Category::Security) {
         rules.extend(rules::security::all_rules());
     }
+    if include_all || options.categories.contains(&Category::SwiftuiPerformance) {
+        rules.extend(rules::swiftui_perf::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::SwiftuiArchitecture) {
+        rules.extend(rules::swiftui_arch::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Networking) {
+        rules.extend(rules::networking::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Codable) {
+        rules.extend(rules::codable::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Energy) {
+        rules.extend(rules::energy::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Storage) {
+        rules.extend(rules::storage::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Accessibility) {
+        rules.extend(rules::accessibility::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Testing) {
+        rules.extend(rules::testing::all_rules());
+    }
+    if include_all || options.categories.contains(&Category::Modernization) {
+        rules.extend(rules::modernization::all_rules());
+    }
 
     rules
 }

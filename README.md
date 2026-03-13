@@ -4,6 +4,93 @@ A Rust-based [MCP](https://modelcontextprotocol.io) server that builds a code gr
 
 Built for AI-assisted iOS development: give your coding agent deep understanding of a Swift codebase without reading every file.
 
+---
+
+## Installation
+
+### Homebrew (recommended)
+
+```bash
+brew tap tooszovski/swiftgraph https://github.com/tooszovski/swiftgraph
+brew install swiftgraph
+```
+
+After installation, verify:
+
+```bash
+swiftgraph --help
+```
+
+### MCP Setup for Claude Code
+
+Add to `.mcp.json` in your iOS project root:
+
+**Apple Silicon (M1/M2/M3/M4):**
+
+```json
+{
+  "mcpServers": {
+    "swiftgraph": {
+      "command": "/opt/homebrew/bin/swiftgraph",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+**Intel Mac:**
+
+```json
+{
+  "mcpServers": {
+    "swiftgraph": {
+      "command": "/usr/local/bin/swiftgraph",
+      "args": ["serve", "--mcp"]
+    }
+  }
+}
+```
+
+> **Note:** Full path is required — Claude Code spawns MCP servers without loading your shell profile, so `PATH` may not include Homebrew directories.
+
+To point at a specific project (e.g. from a global config `~/.claude/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "swiftgraph": {
+      "command": "/opt/homebrew/bin/swiftgraph",
+      "args": ["serve", "--mcp", "--project", "/path/to/ios-project"]
+    }
+  }
+}
+```
+
+Then restart Claude Code. Run `/mcp` to confirm `swiftgraph` is connected and 22 tools are available.
+
+### First Run
+
+```bash
+cd /path/to/ios-project
+swiftgraph init      # creates .swiftgraph/config.json
+swiftgraph index     # indexes Swift files (tree-sitter; adds Index Store if Xcode build exists)
+```
+
+### Cursor / Windsurf
+
+Add to MCP settings with the same command and args. Use the full Homebrew path as shown above.
+
+### Build from Source
+
+```bash
+git clone https://github.com/tooszovski/swiftgraph.git
+cd swiftgraph
+cargo build --workspace --release
+# Binary at target/release/swiftgraph
+```
+
+---
+
 ## Why
 
 LLMs working with large Swift codebases need more than text search. SwiftGraph gives them:
@@ -16,29 +103,6 @@ LLMs working with large Swift codebases need more than text search. SwiftGraph g
 
 All through the Model Context Protocol — works with Claude Code, Cursor, Windsurf, or any MCP client.
 
-## Quick Start
-
-```bash
-# Build from source (requires Rust)
-cargo build --workspace --release
-
-# Initialize in your Swift project directory
-cd /path/to/ios-app
-swiftgraph init
-
-# Index the project (uses tree-sitter; adds Index Store data if Xcode build exists)
-swiftgraph index
-
-# Search for symbols
-swiftgraph search "ViewModel"
-
-# Run audit
-swiftgraph audit --categories concurrency,memory
-
-# Start as MCP server
-swiftgraph serve --mcp
-```
-
 ### Performance
 
 Tested on a production iOS app (943 Swift files):
@@ -49,27 +113,6 @@ Tested on a production iOS app (943 Swift files):
 | Incremental reindex | 0.5s |
 | Search query | <120ms |
 | Full audit (12 categories) | 0.8s |
-
-## MCP Server Setup
-
-### Claude Code
-
-Add to `.mcp.json` in your project root:
-
-```json
-{
-  "mcpServers": {
-    "swiftgraph": {
-      "command": "/path/to/swiftgraph",
-      "args": ["serve", "--mcp"]
-    }
-  }
-}
-```
-
-### Cursor / Windsurf
-
-Add to MCP settings with the same command and args.
 
 ## CLI Commands
 

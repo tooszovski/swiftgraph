@@ -11,29 +11,19 @@
 - [x] **v0.4 — Analysis** — complexity, dead-code, cycles, coupling, architecture, imports, boundaries
 - [x] **v0.5 — Production** — 9 audit categories (SUI/ARCH/NRG/NET/COD/STR/A11Y/TST/MOD), SARIF, watch mode
 
-**Current state**: 22 MCP tools, 18 CLI subcommands, 943 files indexed (~/git/ios), 7202 nodes, 43567 edges
+**Current state**: 22 MCP tools, 19 CLI subcommands, 943 files indexed (~/git/ios), 7202 nodes, 43567 edges
 
 ---
 
 ## Open Items — Bugs & Quick Fixes
 
-### P0 — Bugs found in testing (2026-03-13)
+### P0 — Bugs found in testing (2026-03-13) — ALL FIXED ✓
 
-- [ ] **FTS5 search: prefix matching** — `search "fetch"` returns 0 results because query is passed as-is to FTS5 MATCH. Need auto-`*` suffix for prefix matching and fallback to LIKE when FTS5 returns 0 results (not just on error).
-  - File: `crates/swiftgraph-core/src/storage/queries.rs:68-82` (search_nodes)
-  - File: `crates/swiftgraph-mcp/src/tools/navigation.rs:24-35` (fallback logic)
-
-- [ ] **FTS5 search: `--kind` filter ignored in FTS5 path** — `--kind` is only applied in the LIKE fallback (`find_nodes_by_name`), not when FTS5 succeeds. Need post-filter or joined query.
-  - File: `crates/swiftgraph-core/src/storage/queries.rs:102-131` (find_nodes_by_name has kind, search_nodes doesn't)
-
-- [ ] **FTS5 search: wildcard `*` returns empty** — bare `*` is invalid FTS5 syntax, should be treated as "list all" (no WHERE clause or LIKE `%%`).
-  - File: `crates/swiftgraph-mcp/src/tools/navigation.rs:24-35`
-
-- [ ] **Add `callees` CLI subcommand** — MCP tool `swiftgraph_callees` exists (server.rs:279), but no CLI subcommand. Need `Callees` variant in Command enum.
-  - File: `crates/swiftgraph-mcp/src/main.rs` (Command enum, lines 20-188)
-
-- [ ] **Audit max_issues is global, not per-category** — `issues.truncate(max_issues)` is applied after collecting all categories. When running all 12 categories with default max_issues=100, categories later in the list may be entirely truncated.
-  - File: `crates/swiftgraph-audit/src/runner.rs:84-93`
+- [x] **FTS5 search: prefix matching** — auto-`*` suffix + LIKE fallback on 0 results
+- [x] **FTS5 search: `--kind` filter** — post-filter applied in FTS5 path
+- [x] **FTS5 search: wildcard `*`** — treated as "list all"
+- [x] **Add `callees` CLI subcommand** — added, parity with MCP tool
+- [x] **Audit max_issues per-category** — even distribution across categories
 
 ### P1 — Quality improvements
 
@@ -75,21 +65,21 @@
 
 ---
 
-## Summary: 14 open items
+## Summary: 9 open items (5 P0 closed)
 
-| # | Priority | Item | Type |
-|---|----------|------|------|
-| 1 | P0 | FTS5 prefix matching (auto-`*` + fallback on 0 results) | Bug |
-| 2 | P0 | FTS5 `--kind` filter in both paths | Bug |
-| 3 | P0 | FTS5 wildcard `*` as "list all" | Bug |
-| 4 | P0 | Add `callees` CLI subcommand | Missing feature |
-| 5 | P0 | Audit max_issues per-category cap | Bug |
-| 6 | P1 | Energy audit rules — broader patterns | Quality |
-| 7 | P1 | Verify critical-severity rules fire | Quality |
-| 8 | P1 | FTS5 ranking (BM25 + importance) | Enhancement |
-| 9 | P1 | FTS5 trigram tokenizer | Enhancement |
-| 10 | P2 | Homebrew formula | Distribution |
-| 11 | P2 | In-memory LRU cache | Performance |
-| 12 | P3 | swift-syntax subprocess | New feature |
-| 13 | P3 | Benchmark suite (criterion) | Testing |
-| 14 | P3 | Integration test fixtures | Testing |
+| # | Priority | Item | Type | Status |
+|---|----------|------|------|--------|
+| ~~1~~ | ~~P0~~ | ~~FTS5 prefix matching~~ | ~~Bug~~ | DONE |
+| ~~2~~ | ~~P0~~ | ~~FTS5 --kind filter~~ | ~~Bug~~ | DONE |
+| ~~3~~ | ~~P0~~ | ~~FTS5 wildcard *~~ | ~~Bug~~ | DONE |
+| ~~4~~ | ~~P0~~ | ~~callees CLI subcommand~~ | ~~Missing feature~~ | DONE |
+| ~~5~~ | ~~P0~~ | ~~Audit per-category cap~~ | ~~Bug~~ | DONE |
+| 6 | P1 | Energy audit rules — broader patterns | Quality | |
+| 7 | P1 | Verify critical-severity rules fire | Quality | |
+| 8 | P1 | FTS5 ranking (BM25 + importance) | Enhancement | |
+| 9 | P1 | FTS5 trigram tokenizer | Enhancement | |
+| 10 | P2 | Homebrew formula | Distribution | |
+| 11 | P2 | In-memory LRU cache | Performance | |
+| 12 | P3 | swift-syntax subprocess | New feature | |
+| 13 | P3 | Benchmark suite (criterion) | Testing | |
+| 14 | P3 | Integration test fixtures | Testing | |

@@ -27,23 +27,17 @@
 
 ### P1 — Quality improvements
 
-- [ ] **Energy audit rules too narrow** — NRG-001..006 exist but find 0 issues on 943-file production project. Rules check literal patterns (e.g., `Timer` with interval < 1s, `startUpdatingLocation` without `activityType`) but real code uses wrappers/abstractions. Need broader matching: Timer.publish, DispatchSourceTimer, CLLocationManager patterns, background fetch intervals.
-  - File: `crates/swiftgraph-audit/src/rules/energy.rs` (6 rules, 333 lines)
-
-- [ ] **No critical-severity audit findings** — `audit --min-severity critical` returns 0 on real project. Only CONC-003 (Task.detached) and SEC-001 (hardcoded secrets) are critical. Verify these rules fire on real patterns.
-  - Files: `crates/swiftgraph-audit/src/rules/concurrency.rs`, `security.rs`
+- [x] **Energy audit rules broadened** — Added NRG-007 (short asyncAfter), NRG-008 (CLLocationManager without desiredAccuracy), expanded NRG-001 to <= 1s intervals, NRG-004 to detect repeatForever. 0 → 18 findings on production project.
+- [ ] **No critical-severity audit findings** — `audit --min-severity critical` returns 0. Project legitimately has no `Task.detached` or hardcoded secrets. Rules are correct; the project is clean.
 
 ---
 
 ## Open Items — New Features
 
-### P1 — Search & Intelligence
+### P1 — Search & Intelligence (ALL DONE)
 
-- [ ] **FTS5 ranking by symbol importance** — ORDER BY rank (BM25), weighted fields (name > qualified_name > signature), boost by fan-in/complexity score.
-  - File: `crates/swiftgraph-core/src/storage/queries.rs:68-82`
-
-- [ ] **FTS5 trigram tokenizer** — for substring matching without prefix requirement. Requires `tokenize='trigram'` in CREATE VIRTUAL TABLE.
-  - File: `crates/swiftgraph-core/src/storage/schema.rs:70-77`
+- [x] **FTS5 BM25 ranking** — ORDER BY bm25() with weighted fields: name(10x) > qualified_name(5x) > signature(1x)
+- [x] **FTS5 trigram tokenizer** — node_trigram table for substring matching ("Delegate" → "AppDelegate")
 
 ### P2 — Infrastructure
 
@@ -65,7 +59,7 @@
 
 ---
 
-## Summary: 9 open items (5 P0 closed)
+## Summary: 5 open items (9 closed)
 
 | # | Priority | Item | Type | Status |
 |---|----------|------|------|--------|
@@ -74,10 +68,10 @@
 | ~~3~~ | ~~P0~~ | ~~FTS5 wildcard *~~ | ~~Bug~~ | DONE |
 | ~~4~~ | ~~P0~~ | ~~callees CLI subcommand~~ | ~~Missing feature~~ | DONE |
 | ~~5~~ | ~~P0~~ | ~~Audit per-category cap~~ | ~~Bug~~ | DONE |
-| 6 | P1 | Energy audit rules — broader patterns | Quality | |
-| 7 | P1 | Verify critical-severity rules fire | Quality | |
-| 8 | P1 | FTS5 ranking (BM25 + importance) | Enhancement | |
-| 9 | P1 | FTS5 trigram tokenizer | Enhancement | |
+| ~~6~~ | ~~P1~~ | ~~Energy audit rules~~ | ~~Quality~~ | DONE |
+| ~~7~~ | ~~P1~~ | ~~Critical-severity rules~~ | ~~Quality~~ | OK (project clean) |
+| ~~8~~ | ~~P1~~ | ~~FTS5 BM25 ranking~~ | ~~Enhancement~~ | DONE |
+| ~~9~~ | ~~P1~~ | ~~FTS5 trigram tokenizer~~ | ~~Enhancement~~ | DONE |
 | 10 | P2 | Homebrew formula | Distribution | |
 | 11 | P2 | In-memory LRU cache | Performance | |
 | 12 | P3 | swift-syntax subprocess | New feature | |

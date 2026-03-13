@@ -199,7 +199,15 @@ pub fn index_directory_with_store(
 
     conn.execute("COMMIT", [])?;
 
-    // 4. Resolve name:: edge targets to real node IDs (creates cross-file edges)
+    // 4. Optional swift-syntax enrichment (if parser binary available)
+    if let Some(parser_path) = crate::swift_syntax::find_parser() {
+        let enriched = enrich_with_swift_syntax(&conn, &parser_path, &parse_results)?;
+        if enriched > 0 {
+            info!("swift-syntax enriched {enriched} nodes with attributes/doc-comments");
+        }
+    }
+
+    // 5. Resolve name:: edge targets to real node IDs (creates cross-file edges)
     let resolved = resolve_name_edges(&conn)?;
     if resolved > 0 {
         info!("Resolved {resolved} call edges to real targets");
@@ -348,6 +356,98 @@ fn resolve_name_edges(conn: &rusqlite::Connection) -> Result<usize, PipelineErro
     conn.execute("COMMIT", [])?;
 
     Ok(resolved)
+}
+
+/// Enrich tree-sitter-parsed nodes with swift-syntax data (attributes, doc comments, signatures).
+fn enrich_with_swift_syntax(
+    conn: &rusqlite::Connection,
+    parser_path: &std::path::Path,
+    parse_results: &[(
+        std::path::PathBuf,
+        String,
+        crate::tree_sitter::parser::ParseResult,
+    )],
+) -> Result<usize, PipelineError> {
+    let mut enriched_count = 0;
+
+    for (path, _hash, _ts_result) in parse_results {
+        let syntax_result = match crate::swift_syntax::parse_file(parser_path, path) {
+            Ok(r) => r,
+            Err(e) => {
+                debug!("swift-syntax skipped {}: {e}", path.display());
+                continue;
+            }
+        };
+
+        // Match declarations by name+line to existing nodes and update attributes/doc_comment
+        for decl in &syntax_result.declarations {
+            let path_str = path.to_string_lossy();
+            // Find matching node by name and approximate line
+            let matching_node = conn
+                .query_row(
+                    "SELECT id FROM nodes WHERE name = ?1 AND file = ?2 AND ABS(line - ?3) <= 2 LIMIT 1",
+                    rusqlite::params![decl.name, path_str.as_ref(), decl.line],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+
+            if let Some(node_id) = matching_node {
+                let mut updated = false;
+
+                // Enrich attributes if swift-syntax found more
+                if !decl.attributes.is_empty() {
+                    let attrs_json = serde_json::to_string(&decl.attributes).unwrap_or_default();
+                    conn.execute(
+                        "UPDATE nodes SET attributes = ?1 WHERE id = ?2",
+                        rusqlite::params![attrs_json, node_id],
+                    )?;
+                    updated = true;
+                }
+
+                // Enrich doc comment
+                if let Some(ref doc) = decl.doc_comment {
+                    conn.execute(
+                        "UPDATE nodes SET doc_comment = ?1 WHERE id = ?2",
+                        rusqlite::params![doc, node_id],
+                    )?;
+                    updated = true;
+                }
+
+                // Enrich access level
+                if let Some(ref access) = decl.access_level {
+                    let level = match access.as_str() {
+                        "open" => "Open",
+                        "public" => "Public",
+                        "package" => "Package",
+                        "internal" => "Internal",
+                        "fileprivate" => "FilePrivate",
+                        "private" => "Private",
+                        _ => "Internal",
+                    };
+                    conn.execute(
+                        "UPDATE nodes SET access_level = ?1 WHERE id = ?2",
+                        rusqlite::params![level, node_id],
+                    )?;
+                    updated = true;
+                }
+
+                // Enrich signature
+                if let Some(ref sig) = decl.signature {
+                    conn.execute(
+                        "UPDATE nodes SET signature = ?1 WHERE id = ?2",
+                        rusqlite::params![sig, node_id],
+                    )?;
+                    updated = true;
+                }
+
+                if updated {
+                    enriched_count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(enriched_count)
 }
 
 /// Try to auto-detect the Index Store path from DerivedData.

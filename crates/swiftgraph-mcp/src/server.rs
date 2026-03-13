@@ -1,5 +1,7 @@
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
+use lru::LruCache;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::schemars;
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
@@ -7,6 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::tools::{navigation, status};
+
+/// LRU cache for MCP tool responses, keyed by (tool_name, params_hash).
+type ResponseCache = Arc<Mutex<LruCache<String, String>>>;
 
 // --- Parameter types for MCP tools ---
 
@@ -177,7 +182,10 @@ pub struct SwiftGraphServer {
     pub project_root: PathBuf,
     pub db_path: PathBuf,
     tool_router: ToolRouter<Self>,
+    cache: ResponseCache,
 }
+
+const CACHE_CAPACITY: usize = 256;
 
 impl SwiftGraphServer {
     pub fn new(project_root: PathBuf) -> Self {
@@ -186,6 +194,31 @@ impl SwiftGraphServer {
             project_root,
             db_path,
             tool_router: Self::tool_router(),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                std::num::NonZeroUsize::new(CACHE_CAPACITY).unwrap(),
+            ))),
+        }
+    }
+
+    /// Get a cached response or compute and cache it.
+    fn cached(&self, key: &str, f: impl FnOnce() -> String) -> String {
+        let key = key.to_string();
+        if let Ok(mut cache) = self.cache.lock() {
+            if let Some(cached) = cache.get(&key) {
+                return cached.clone();
+            }
+        }
+        let result = f();
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.put(key, result.clone());
+        }
+        result
+    }
+
+    /// Invalidate all cached responses (after reindex).
+    fn invalidate_cache(&self) {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.clear();
         }
     }
 }
@@ -210,18 +243,22 @@ impl SwiftGraphServer {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<ReindexParams>,
     ) -> String {
-        match swiftgraph_core::pipeline::index_directory(
+        let result = swiftgraph_core::pipeline::index_directory(
             &self.db_path,
             &self.project_root,
             params.force.unwrap_or(false),
-        ) {
-            Ok(result) => json!({
-                "files_scanned": result.files_scanned,
-                "files_indexed": result.files_indexed,
-                "nodes_added": result.nodes_added,
-                "edges_added": result.edges_added
-            })
-            .to_string(),
+        );
+        match result {
+            Ok(result) => {
+                self.invalidate_cache();
+                json!({
+                    "files_scanned": result.files_scanned,
+                    "files_indexed": result.files_indexed,
+                    "nodes_added": result.nodes_added,
+                    "edges_added": result.edges_added
+                })
+                .to_string()
+            }
             Err(e) => json!({"error": e.to_string()}).to_string(),
         }
     }
@@ -232,15 +269,24 @@ impl SwiftGraphServer {
         &self,
         rmcp::handler::server::wrapper::Parameters(params): rmcp::handler::server::wrapper::Parameters<SearchToolParams>,
     ) -> String {
-        let nav_params = navigation::SearchParams {
-            query: params.query,
-            kind: params.kind,
-            limit: params.limit,
-        };
-        match navigation::search(&self.db_path, nav_params) {
-            Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
-            Err(e) => json!({"error": e.to_string()}).to_string(),
-        }
+        let cache_key = format!(
+            "search:{}:{}:{}",
+            params.query,
+            params.kind.as_deref().unwrap_or(""),
+            params.limit.unwrap_or(20)
+        );
+        let db_path = self.db_path.clone();
+        self.cached(&cache_key, || {
+            let nav_params = navigation::SearchParams {
+                query: params.query,
+                kind: params.kind,
+                limit: params.limit,
+            };
+            match navigation::search(&db_path, nav_params) {
+                Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
+                Err(e) => json!({"error": e.to_string()}).to_string(),
+            }
+        })
     }
 
     /// Get detailed info about a symbol by its ID or name

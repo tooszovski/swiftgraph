@@ -176,10 +176,15 @@ pub struct AuditToolParams {
     pub max_issues: Option<usize>,
 }
 
-/// SwiftGraph MCP Server state.
+/// SwiftGraph MCP server holding project state, DB path, and response cache.
+///
+/// Created once per project and serves all 22 MCP tools. Uses an LRU cache
+/// for hot-path queries (search) that is invalidated on reindex.
 #[derive(Clone)]
 pub struct SwiftGraphServer {
+    /// Root directory of the Swift project.
     pub project_root: PathBuf,
+    /// Path to `.swiftgraph/db.sqlite`.
     pub db_path: PathBuf,
     tool_router: ToolRouter<Self>,
     cache: ResponseCache,
@@ -188,6 +193,7 @@ pub struct SwiftGraphServer {
 const CACHE_CAPACITY: usize = 256;
 
 impl SwiftGraphServer {
+    /// Create a new server for the given project root.
     pub fn new(project_root: PathBuf) -> Self {
         let db_path = project_root.join(".swiftgraph/db.sqlite");
         Self {

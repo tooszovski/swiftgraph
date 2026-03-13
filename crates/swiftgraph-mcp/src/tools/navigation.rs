@@ -1,3 +1,9 @@
+//! Navigation and analysis tool functions.
+//!
+//! Each function opens a SQLite connection from `db_path`, executes queries,
+//! and returns a typed response. These are the building blocks called by MCP
+//! tool handlers in `server.rs` and by CLI subcommands in `main.rs`.
+
 use std::path::Path;
 
 use anyhow::Result;
@@ -8,19 +14,25 @@ use swiftgraph_core::analysis;
 use swiftgraph_core::graph::{GraphEdge, GraphNode};
 use swiftgraph_core::storage::{self, queries};
 
+/// Parameters for symbol search.
 #[derive(Debug, Deserialize)]
 pub struct SearchParams {
+    /// Search query (prefix, wildcard, or empty for list-all).
     pub query: String,
+    /// Filter by symbol kind (e.g. "class", "protocol").
     pub kind: Option<String>,
+    /// Max results (default 20).
     pub limit: Option<u32>,
 }
 
+/// Search result with matching nodes and total count.
 #[derive(Debug, Serialize)]
 pub struct SearchResponse {
     pub results: Vec<GraphNode>,
     pub total: usize,
 }
 
+/// Search for symbols using FTS5 prefix → trigram → LIKE fallback chain.
 pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(20);
@@ -69,29 +81,37 @@ pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
     Ok(SearchResponse { results, total })
 }
 
+/// Parameters for single-node lookup.
 #[derive(Debug, Deserialize)]
 pub struct NodeParams {
+    /// Symbol ID (USR) or name.
     pub symbol: String,
 }
 
+/// Look up a single node by ID or name.
 pub fn get_node(db_path: &Path, params: NodeParams) -> Result<Option<GraphNode>> {
     let conn = storage::open_db(db_path)?;
     let node = queries::get_node(&conn, &params.symbol)?;
     Ok(node)
 }
 
+/// Parameters for caller/callee/reference queries.
 #[derive(Debug, Deserialize)]
 pub struct CallersParams {
+    /// Symbol ID (USR) or name.
     pub symbol: String,
+    /// Max results (default 30).
     pub limit: Option<u32>,
 }
 
+/// Response containing edges and their count.
 #[derive(Debug, Serialize)]
 pub struct EdgesResponse {
     pub edges: Vec<GraphEdge>,
     pub count: usize,
 }
 
+/// Find all callers of a symbol (incoming `calls` edges).
 pub fn get_callers(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(30);
@@ -100,6 +120,7 @@ pub fn get_callers(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
     Ok(EdgesResponse { edges, count })
 }
 
+/// Find all callees of a symbol (outgoing `calls` edges).
 pub fn get_callees(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(30);
@@ -108,6 +129,7 @@ pub fn get_callees(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
     Ok(EdgesResponse { edges, count })
 }
 
+/// Find all references to a symbol (any incoming edge kind).
 pub fn get_references(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(50);
@@ -116,13 +138,18 @@ pub fn get_references(db_path: &Path, params: CallersParams) -> Result<EdgesResp
     Ok(EdgesResponse { edges, count })
 }
 
+/// Parameters for type hierarchy traversal.
 #[derive(Debug, Deserialize)]
 pub struct HierarchyParams {
+    /// Symbol ID (USR) or name.
     pub symbol: String,
-    pub direction: Option<String>, // "subtypes" | "supertypes"
+    /// Direction: "subtypes" or "supertypes".
+    pub direction: Option<String>,
+    /// Max depth (default 3).
     pub depth: Option<u32>,
 }
 
+/// Hierarchy result with root symbol and related types.
 #[derive(Debug, Serialize)]
 pub struct HierarchyResponse {
     pub root: String,
@@ -130,6 +157,7 @@ pub struct HierarchyResponse {
     pub related: Vec<GraphNode>,
 }
 
+/// Get type hierarchy (subtypes or supertypes) for a symbol.
 pub fn get_hierarchy(db_path: &Path, params: HierarchyParams) -> Result<HierarchyResponse> {
     let conn = storage::open_db(db_path)?;
     let direction = params.direction.as_deref().unwrap_or("subtypes");
@@ -160,18 +188,23 @@ pub fn get_hierarchy(db_path: &Path, params: HierarchyParams) -> Result<Hierarch
     })
 }
 
+/// Parameters for listing indexed files.
 #[derive(Debug, Deserialize)]
 pub struct FilesParams {
+    /// Filter by path prefix (e.g. "Sources/").
     pub path: Option<String>,
+    /// Max results (default 100).
     pub limit: Option<u32>,
 }
 
+/// File listing result.
 #[derive(Debug, Serialize)]
 pub struct FilesResponse {
     pub files: Vec<swiftgraph_core::storage::queries::FileInfo>,
     pub count: usize,
 }
 
+/// List indexed files, optionally filtered by path prefix.
 pub fn get_files(db_path: &Path, params: FilesParams) -> Result<FilesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(100);
@@ -198,12 +231,14 @@ fn resolve_symbol_id(db_path: &Path, symbol: &str) -> Result<String> {
 
 // --- v0.2: Extensions ---
 
+/// Parameters for extension lookup.
 #[derive(Debug, Deserialize)]
 pub struct ExtensionsParams {
     pub symbol: String,
     pub limit: Option<u32>,
 }
 
+/// Find all extensions of a type.
 pub fn get_extensions(db_path: &Path, params: ExtensionsParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(50);
@@ -214,13 +249,17 @@ pub fn get_extensions(db_path: &Path, params: ExtensionsParams) -> Result<EdgesR
 
 // --- v0.2: Conformances ---
 
+/// Parameters for conformance queries.
 #[derive(Debug, Deserialize)]
 pub struct ConformancesParams {
+    /// Symbol ID (USR) or name.
     pub symbol: String,
-    pub direction: Option<String>, // "conforms" | "conformedBy"
+    /// Direction: "conforms" or "conformedBy".
+    pub direction: Option<String>,
     pub limit: Option<u32>,
 }
 
+/// Query protocol conformances in either direction.
 pub fn get_conformances(db_path: &Path, params: ConformancesParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let direction = params.direction.as_deref().unwrap_or("conforms");
@@ -232,13 +271,18 @@ pub fn get_conformances(db_path: &Path, params: ConformancesParams) -> Result<Ed
 
 // --- v0.2: Context ---
 
+/// Parameters for task-relevant context building.
 #[derive(Debug, Deserialize)]
 pub struct ContextParams {
+    /// Task description in natural language.
     pub task: String,
+    /// Max nodes to return (default 25).
     pub max_nodes: Option<u32>,
+    /// Include test files in results (default false).
     pub include_tests: Option<bool>,
 }
 
+/// Build task-relevant context by keyword extraction and graph expansion.
 pub fn get_context(
     db_path: &Path,
     params: ContextParams,
@@ -251,12 +295,16 @@ pub fn get_context(
 
 // --- v0.2: Impact ---
 
+/// Parameters for blast-radius impact analysis.
 #[derive(Debug, Deserialize)]
 pub struct ImpactParams {
+    /// Symbol ID (USR) or name.
     pub symbol: String,
+    /// Depth of transitive analysis (default 3).
     pub depth: Option<u32>,
 }
 
+/// Analyze the blast radius of changing a symbol.
 pub fn get_impact(db_path: &Path, params: ImpactParams) -> Result<analysis::impact::ImpactResult> {
     let depth = params.depth.unwrap_or(3);
     // Resolve name to ID if needed
@@ -267,11 +315,14 @@ pub fn get_impact(db_path: &Path, params: ImpactParams) -> Result<analysis::impa
 
 // --- v0.2: Diff Impact ---
 
+/// Parameters for git-diff-based impact analysis.
 #[derive(Debug, Deserialize)]
 pub struct DiffImpactParams {
-    pub git_ref: Option<String>, // "staged", "unstaged", "HEAD~3..HEAD"
+    /// Git ref: "staged", "unstaged", or a range like "HEAD~3..HEAD".
+    pub git_ref: Option<String>,
 }
 
+/// Analyze the impact of git-changed symbols.
 pub fn get_diff_impact(
     db_path: &Path,
     project_root: &Path,
@@ -284,6 +335,7 @@ pub fn get_diff_impact(
 
 // --- v0.4: Analysis ---
 
+/// Analyze structural complexity (fan-in/fan-out) for symbols.
 pub fn get_complexity(
     db_path: &Path,
     path_filter: Option<&str>,
@@ -299,6 +351,7 @@ pub fn get_complexity(
     Ok(result)
 }
 
+/// Find potentially dead code (symbols with no incoming references).
 pub fn get_dead_code(
     db_path: &Path,
     path_filter: Option<&str>,
@@ -314,6 +367,7 @@ pub fn get_dead_code(
     Ok(result)
 }
 
+/// Detect file-level dependency cycles via DFS.
 pub fn get_cycles(
     db_path: &Path,
     path_filter: Option<&str>,
@@ -325,6 +379,7 @@ pub fn get_cycles(
 
 // --- v0.4: Coupling, Architecture, Imports ---
 
+/// Analyze module coupling metrics (afferent/efferent, instability).
 pub fn get_coupling(
     db_path: &Path,
     depth: Option<u32>,
@@ -334,6 +389,7 @@ pub fn get_coupling(
     Ok(result)
 }
 
+/// Auto-detect or validate architectural pattern (MVVM/VIPER/TCA/MVC).
 pub fn get_architecture(
     db_path: &Path,
     expected: Option<&str>,
@@ -342,6 +398,7 @@ pub fn get_architecture(
     Ok(result)
 }
 
+/// Analyze module import dependencies.
 pub fn get_imports(
     db_path: &Path,
     path_filter: Option<&str>,

@@ -257,6 +257,201 @@ fn inherits_from(node: Node, source: &str, types: &[&str]) -> bool {
     false
 }
 
+/// CONC-005: Non-Sendable type used across concurrency boundary.
+pub struct SendableViolation;
+
+impl AuditRule for SendableViolation {
+    fn id(&self) -> &str {
+        "CONC-005"
+    }
+    fn name(&self) -> &str {
+        "sendable-violation"
+    }
+    fn category(&self) -> Category {
+        Category::Concurrency
+    }
+    fn severity(&self) -> Severity {
+        Severity::High
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find class declarations (non-final, non-actor) with mutable stored properties
+        // that don't conform to Sendable or @unchecked Sendable
+        let class_decls = find_descendants(root, ctx.source, &|node, _| {
+            node.kind() == "class_declaration"
+        });
+
+        for decl in class_decls {
+            let keyword = class_keyword(decl, ctx.source);
+            if keyword != "class" {
+                continue;
+            }
+
+            let name = decl_name(decl, ctx.source).unwrap_or_default();
+            let decl_text = node_text(decl, ctx.source);
+
+            // Skip if already Sendable
+            if decl_text.contains("Sendable") || decl_text.contains("@unchecked") {
+                continue;
+            }
+
+            // Check if this class has mutable state (var properties)
+            let has_var = find_descendants(decl, ctx.source, &|node, src| {
+                node.kind() == "property_declaration" && node_text(node, src).starts_with("var ")
+            });
+
+            if has_var.is_empty() {
+                continue;
+            }
+
+            // Check if the class is used in Task/async context within this file
+            let file_text = ctx.source;
+            let name_in_task = file_text.contains("Task {") || file_text.contains("Task.detached");
+
+            if !name_in_task {
+                continue;
+            }
+
+            // Heuristic: non-Sendable class with mutable state used alongside Task
+            if !has_attribute(decl, ctx.source, "MainActor") {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: format!(
+                        "`{name}` has mutable state but doesn't conform to Sendable — potential data race"
+                    ),
+                    file: ctx.file_path.to_string(),
+                    line: decl.start_position().row as u32 + 1,
+                    symbol: Some(name),
+                    fix: Some(
+                        "Make the class final + Sendable, use @MainActor, or convert to an actor"
+                            .into(),
+                    ),
+                });
+            }
+        }
+
+        issues
+    }
+}
+
+/// CONC-006: Stored Task without cancellation handling.
+pub struct StoredTaskWithoutCancel;
+
+impl AuditRule for StoredTaskWithoutCancel {
+    fn id(&self) -> &str {
+        "CONC-006"
+    }
+    fn name(&self) -> &str {
+        "stored-task-no-cancel"
+    }
+    fn category(&self) -> Category {
+        Category::Concurrency
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find property declarations that store a Task
+        let props = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "property_declaration" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains("Task<") || text.contains(": Task?") || text.contains(": Task<")
+        });
+
+        for prop in props {
+            let name = decl_name(prop, ctx.source).unwrap_or_default();
+            let file_text = ctx.source;
+
+            // Check if .cancel() is called on this property anywhere in the file
+            let cancel_pattern = format!("{name}.cancel()");
+            if !file_text.contains(&cancel_pattern) {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: format!(
+                        "Stored Task `{name}` has no .cancel() call — may leak work on dealloc"
+                    ),
+                    file: ctx.file_path.to_string(),
+                    line: prop.start_position().row as u32 + 1,
+                    symbol: Some(name),
+                    fix: Some("Cancel the task in deinit or when no longer needed".into()),
+                });
+            }
+        }
+
+        issues
+    }
+}
+
+/// CONC-007: Nonisolated access to mutable state.
+pub struct NonisolatedMutableAccess;
+
+impl AuditRule for NonisolatedMutableAccess {
+    fn id(&self) -> &str {
+        "CONC-007"
+    }
+    fn name(&self) -> &str {
+        "nonisolated-mutable-access"
+    }
+    fn category(&self) -> Category {
+        Category::Concurrency
+    }
+    fn severity(&self) -> Severity {
+        Severity::High
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find functions marked nonisolated that access self.property
+        let funcs = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "function_declaration" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.starts_with("nonisolated ") || text.starts_with("nonisolated(unsafe)")
+        });
+
+        for func in funcs {
+            let text = node_text(func, ctx.source);
+            // Check if the function accesses mutable self properties
+            if text.contains("self.") {
+                let name = decl_name(func, ctx.source).unwrap_or_default();
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: format!(
+                        "nonisolated function `{name}` accesses `self` — potential data race"
+                    ),
+                    file: ctx.file_path.to_string(),
+                    line: func.start_position().row as u32 + 1,
+                    symbol: Some(name),
+                    fix: Some("Remove nonisolated or avoid accessing actor-isolated state".into()),
+                });
+            }
+        }
+
+        issues
+    }
+}
+
 /// All concurrency rules.
 pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
     vec![
@@ -264,5 +459,8 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(UnsafeTaskCapture),
         Box::new(MainActorFromDetached),
         Box::new(ActorHopInLoop),
+        Box::new(SendableViolation),
+        Box::new(StoredTaskWithoutCancel),
+        Box::new(NonisolatedMutableAccess),
     ]
 }

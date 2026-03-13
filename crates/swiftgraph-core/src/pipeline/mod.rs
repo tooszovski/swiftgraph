@@ -6,6 +6,7 @@ use thiserror::Error;
 use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
+use crate::config::Config;
 use crate::index_store::ffi::IndexStoreLib;
 use crate::index_store::reader;
 use crate::storage::{self, queries, StorageError};
@@ -66,17 +67,21 @@ pub fn index_directory_with_store(
 ) -> Result<IndexResult, PipelineError> {
     let conn = storage::open_db(db_path)?;
 
+    // Load config for include/exclude globs
+    let config = Config::load(source_root);
+    let include_set = config.include_globset();
+    let exclude_set = config.exclude_globset();
+
     // 1. Scan for .swift files
     let swift_files: Vec<_> = WalkDir::new(source_root)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "swift"))
         .filter(|e| {
-            let path = e.path().to_string_lossy();
-            !path.contains("/.build/")
-                && !path.contains("/Pods/")
-                && !path.contains("/Generated/")
-                && !path.contains("/DerivedData/")
+            let path = e.path();
+            // Use config globs for filtering
+            let relative = path.strip_prefix(source_root).unwrap_or(path);
+            config.should_include(relative, &include_set, &exclude_set)
         })
         .map(|e| e.into_path())
         .collect();

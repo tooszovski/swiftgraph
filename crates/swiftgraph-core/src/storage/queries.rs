@@ -64,7 +64,8 @@ pub fn upsert_file(conn: &Connection, path: &str, hash: &str, symbol_count: u32)
     Ok(())
 }
 
-/// Search nodes by name using FTS5.
+/// Search nodes by name using FTS5 with BM25 ranking.
+/// Name matches are weighted 10x higher than qualified_name (5x) and signature (1x).
 pub fn search_nodes(conn: &Connection, query: &str, limit: u32) -> SqlResult<Vec<GraphNode>> {
     let mut stmt = conn.prepare(
         r#"SELECT n.id, n.name, n.qualified_name, n.kind, n.sub_kind,
@@ -74,6 +75,7 @@ pub fn search_nodes(conn: &Connection, query: &str, limit: u32) -> SqlResult<Vec
            FROM node_fts f
            JOIN nodes n ON n.rowid = f.rowid
            WHERE node_fts MATCH ?1
+           ORDER BY bm25(node_fts, 10.0, 5.0, 1.0)
            LIMIT ?2"#,
     )?;
 

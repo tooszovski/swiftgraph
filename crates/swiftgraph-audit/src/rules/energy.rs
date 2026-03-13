@@ -1,9 +1,9 @@
-//! Energy audit rules (NRG-001 through NRG-006).
+//! Energy audit rules (NRG-001 through NRG-008).
 
 use crate::engine::{AuditIssue, Category, Severity};
 use crate::rules::{find_descendants, node_text, AuditRule, FileContext};
 
-/// NRG-001: Timer with interval < 1s (battery drain).
+/// NRG-001: Timer with short interval (battery drain).
 pub struct FrequentTimer;
 
 impl AuditRule for FrequentTimer {
@@ -29,17 +29,24 @@ impl AuditRule for FrequentTimer {
                 return false;
             }
             let text = node_text(node, src);
-            text.contains("Timer.scheduledTimer") || text.contains("Timer.publish")
+            text.contains("Timer.scheduledTimer")
+                || text.contains("Timer.publish")
+                || text.contains("Timer(timeInterval")
         });
 
         for timer in timers {
             let text = node_text(timer, ctx.source);
-            // Check for very small intervals
-            let has_small_interval = text.contains("0.0")
-                || text.contains("0.1")
-                || text.contains("0.01")
-                || text.contains("0.5")
-                || text.contains("every: 0.");
+            // Check for intervals <= 1s (short timers drain battery)
+            let has_small_interval = text.contains("every: 0.")
+                || text.contains("every: 1,")
+                || text.contains("every: 1)")
+                || text.contains("timeInterval: 0.")
+                || text.contains("timeInterval: 1,")
+                || text.contains("timeInterval: 1)")
+                || text.contains("withTimeInterval: 0.")
+                || text.contains("withTimeInterval: 1,")
+                || text.contains("interval: 0.")
+                || text.contains("interval: 1,");
 
             if has_small_interval {
                 issues.push(AuditIssue {
@@ -47,11 +54,13 @@ impl AuditRule for FrequentTimer {
                     category: self.category(),
                     severity: self.severity(),
                     rule: self.id().to_string(),
-                    message: "Timer with interval < 1s — significant battery drain".into(),
+                    message: "Timer with interval <= 1s — significant battery drain".into(),
                     file: ctx.file_path.to_string(),
                     line: timer.start_position().row as u32 + 1,
                     symbol: None,
-                    fix: Some("Increase interval or use CADisplayLink for frame-rate work".into()),
+                    fix: Some(
+                        "Increase interval or use CADisplayLink for frame-rate work".into(),
+                    ),
                 });
             }
         }
@@ -87,11 +96,15 @@ impl AuditRule for PollingPattern {
                 return false;
             }
             let text = node_text(node, src);
-            (text.contains("Timer.scheduledTimer") || text.contains("Timer.publish"))
+            (text.contains("Timer.scheduledTimer")
+                || text.contains("Timer.publish")
+                || text.contains("Timer(timeInterval"))
                 && (text.contains("fetch")
                     || text.contains("refresh")
                     || text.contains("reload")
-                    || text.contains("poll"))
+                    || text.contains("poll")
+                    || text.contains("update")
+                    || text.contains("check"))
         });
 
         for timer in timers {
@@ -143,13 +156,14 @@ impl AuditRule for ContinuousLocation {
                 return false;
             }
             let text = node_text(node, src);
-            text.contains("startUpdatingLocation")
+            text.contains("startUpdatingLocation") || text.contains("startMonitoringSignificantLocationChanges")
         });
 
         for call in calls {
-            // Check if activityType is set nearby
+            // Check if activityType or desiredAccuracy is set nearby
             let file_text = ctx.source;
             if !file_text.contains("activityType")
+                && !file_text.contains("desiredAccuracy")
                 && !file_text.contains("allowsBackgroundLocationUpdates = false")
             {
                 issues.push(AuditIssue {
@@ -157,11 +171,11 @@ impl AuditRule for ContinuousLocation {
                     category: self.category(),
                     severity: self.severity(),
                     rule: self.id().to_string(),
-                    message: "startUpdatingLocation without activityType — GPS stays active unnecessarily".into(),
+                    message: "Location updates without activityType or desiredAccuracy — GPS stays active unnecessarily".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
                     symbol: None,
-                    fix: Some("Set activityType and use significant location changes when possible".into()),
+                    fix: Some("Set activityType and desiredAccuracy, use significant location changes when possible".into()),
                 });
             }
         }
@@ -191,18 +205,18 @@ impl AuditRule for AnimationLeak {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find CADisplayLink or withAnimation in repeating contexts
+        // Find CADisplayLink or repeating animations
         let display_links = find_descendants(root, ctx.source, &|node, src| {
             if node.kind() != "call_expression" {
                 return false;
             }
             let text = node_text(node, src);
-            text.contains("CADisplayLink(")
+            text.contains("CADisplayLink(") || text.contains("repeatForever")
         });
 
         for link in display_links {
-            let file_text = ctx.source;
-            if !file_text.contains("invalidate()") {
+            let text = node_text(link, ctx.source);
+            if text.contains("CADisplayLink(") && !ctx.source.contains("invalidate()") {
                 issues.push(AuditIssue {
                     id: format!("{}:{}", self.id(), ctx.file_path),
                     category: self.category(),
@@ -215,6 +229,19 @@ impl AuditRule for AnimationLeak {
                     line: link.start_position().row as u32 + 1,
                     symbol: None,
                     fix: Some("Call invalidate() in deinit or when the view disappears".into()),
+                });
+            }
+            if text.contains("repeatForever") {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "repeatForever animation — ensure it stops when view disappears".into(),
+                    file: ctx.file_path.to_string(),
+                    line: link.start_position().row as u32 + 1,
+                    symbol: None,
+                    fix: Some("Use .onDisappear to stop repeating animations".into()),
                 });
             }
         }
@@ -244,7 +271,6 @@ impl AuditRule for UnnecessaryBackgroundMode {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find beginBackgroundTask without expiration handler
         let bg_tasks = find_descendants(root, ctx.source, &|node, src| {
             if node.kind() != "call_expression" {
                 return false;
@@ -299,9 +325,8 @@ impl AuditRule for EagerNetworking {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find URLSessionConfiguration without waitsForConnectivity
         let configs = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "call_expression" {
+            if node.kind() != "call_expression" && node.kind() != "navigation_expression" {
                 return false;
             }
             let text = node_text(node, src);
@@ -329,6 +354,116 @@ impl AuditRule for EagerNetworking {
     }
 }
 
+/// NRG-007: Short-delay asyncAfter — often a hack around timing bugs.
+pub struct ShortAsyncAfter;
+
+impl AuditRule for ShortAsyncAfter {
+    fn id(&self) -> &str {
+        "NRG-007"
+    }
+    fn name(&self) -> &str {
+        "short-async-after"
+    }
+    fn category(&self) -> Category {
+        Category::Energy
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        let calls = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains("asyncAfter") && text.contains(".now()")
+        });
+
+        for call in calls {
+            let text = node_text(call, ctx.source);
+            // Check for short delays (< 0.5s)
+            let is_short = text.contains("+ 0.0")
+                || text.contains("+ 0.1")
+                || text.contains("+ 0.15")
+                || text.contains("+ 0.2")
+                || text.contains("+ 0.01")
+                || text.contains("+ 0.05");
+
+            if is_short {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "Short asyncAfter delay — often masks a timing or layout bug".into(),
+                    file: ctx.file_path.to_string(),
+                    line: call.start_position().row as u32 + 1,
+                    symbol: None,
+                    fix: Some(
+                        "Use DispatchQueue.main.async, onAppear, or fix the underlying timing issue"
+                            .into(),
+                    ),
+                });
+            }
+        }
+
+        issues
+    }
+}
+
+/// NRG-008: CLLocationManager without desiredAccuracy — defaults to best accuracy (high power).
+pub struct LocationAccuracy;
+
+impl AuditRule for LocationAccuracy {
+    fn id(&self) -> &str {
+        "NRG-008"
+    }
+    fn name(&self) -> &str {
+        "location-accuracy"
+    }
+    fn category(&self) -> Category {
+        Category::Energy
+    }
+    fn severity(&self) -> Severity {
+        Severity::Medium
+    }
+
+    fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
+        let mut issues = Vec::new();
+
+        // Find CLLocationManager() instantiation
+        let managers = find_descendants(root, ctx.source, &|node, src| {
+            if node.kind() != "call_expression" {
+                return false;
+            }
+            let text = node_text(node, src);
+            text.contains("CLLocationManager()")
+        });
+
+        if !managers.is_empty() && !ctx.source.contains("desiredAccuracy") {
+            let first = managers[0];
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: "CLLocationManager without desiredAccuracy — defaults to kCLLocationAccuracyBest (high power)".into(),
+                file: ctx.file_path.to_string(),
+                line: first.start_position().row as u32 + 1,
+                symbol: None,
+                fix: Some("Set desiredAccuracy to kCLLocationAccuracyHundredMeters or lower for background/non-navigation use".into()),
+            });
+        }
+
+        issues
+    }
+}
+
 /// All energy rules.
 pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
     vec![
@@ -338,5 +473,7 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(AnimationLeak),
         Box::new(UnnecessaryBackgroundMode),
         Box::new(EagerNetworking),
+        Box::new(ShortAsyncAfter),
+        Box::new(LocationAccuracy),
     ]
 }

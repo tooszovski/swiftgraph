@@ -183,6 +183,13 @@ pub fn index_directory_with_store(
 
     conn.execute("COMMIT", [])?;
 
+    // 4. Resolve name:: edge targets to real node IDs (creates cross-file edges)
+    let resolved = resolve_name_edges(&conn)?;
+    if resolved > 0 {
+        info!("Resolved {resolved} call edges to real targets");
+        edges_added += resolved;
+    }
+
     let files_indexed = index_store_files.len() + ts_files_indexed;
     let strategy = match (used_index_store, ts_files_indexed > 0) {
         (true, true) => IndexStrategy::Hybrid,
@@ -237,6 +244,94 @@ fn try_index_store(
     let files: std::collections::HashSet<String> = data.file_nodes.keys().cloned().collect();
 
     Ok((nodes_added, edges_added, files))
+}
+
+/// Resolve `name::` prefixed edge targets to real node IDs.
+///
+/// After tree-sitter parsing, call edges use `name::functionName` as target.
+/// This pass finds all such edges, looks up matching nodes by name, and creates
+/// real edges to the resolved targets. The unresolved `name::` edges are then deleted.
+fn resolve_name_edges(conn: &rusqlite::Connection) -> Result<usize, PipelineError> {
+    struct UnresolvedEdge {
+        source: String,
+        target: String,
+        kind: String,
+        file: Option<String>,
+        line: Option<u32>,
+        col: Option<u32>,
+        is_implicit: bool,
+    }
+
+    // Collect all unresolved edges
+    let mut stmt = conn.prepare(
+        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE target LIKE 'name::%'",
+    )?;
+    let unresolved: Vec<UnresolvedEdge> = stmt
+        .query_map([], |row| {
+            Ok(UnresolvedEdge {
+                source: row.get(0)?,
+                target: row.get(1)?,
+                kind: row.get(2)?,
+                file: row.get(3)?,
+                line: row.get(4)?,
+                col: row.get(5)?,
+                is_implicit: row.get(6)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if unresolved.is_empty() {
+        return Ok(0);
+    }
+
+    // Build a lookup of name → [node IDs] from all indexed nodes
+    let mut name_to_ids: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut node_stmt = conn.prepare("SELECT id, name FROM nodes WHERE kind IN ('function', 'method', 'property', 'class', 'struct', 'enum', 'protocol', 'typeAlias')")?;
+    let rows = node_stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows.flatten() {
+        name_to_ids.entry(row.1).or_default().push(row.0);
+    }
+
+    conn.execute("BEGIN TRANSACTION", [])?;
+
+    // Delete all unresolved name:: edges
+    conn.execute("DELETE FROM edges WHERE target LIKE 'name::%'", [])?;
+
+    let mut resolved = 0;
+    let mut insert_stmt = conn.prepare(
+        "INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+
+    for edge in &unresolved {
+        let name = edge.target.strip_prefix("name::").unwrap_or(&edge.target);
+        if let Some(target_ids) = name_to_ids.get(name) {
+            for target_id in target_ids {
+                // Skip self-edges (calling yourself)
+                if *target_id == edge.source {
+                    continue;
+                }
+                insert_stmt.execute(rusqlite::params![
+                    edge.source,
+                    target_id,
+                    edge.kind,
+                    edge.file,
+                    edge.line,
+                    edge.col,
+                    edge.is_implicit
+                ])?;
+                resolved += 1;
+            }
+        }
+        // If no match found, the edge is silently dropped (SDK functions, etc.)
+    }
+
+    conn.execute("COMMIT", [])?;
+
+    Ok(resolved)
 }
 
 /// Try to auto-detect the Index Store path from DerivedData.

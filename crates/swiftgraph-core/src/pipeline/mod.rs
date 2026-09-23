@@ -217,6 +217,15 @@ pub fn index_directory_with_options(
     let mut edges_added = 0;
     let mut used_index_store = false;
 
+    // Only project sources: the store also describes SPM checkouts,
+    // DerivedSources and files excluded by the config.
+    let store_data = store_data.map(|(path, data)| {
+        (
+            path,
+            restrict_to_project(data, source_root, &config, &include_set, &exclude_set),
+        )
+    });
+
     if let Some((_, data)) = &store_data {
         match write_index_store(&conn, data) {
             Ok((n, e, files)) => {
@@ -420,6 +429,30 @@ pub fn index_directory_with_options(
         nodes_enriched,
         index_store_note: None,
     })
+}
+
+/// Drop Index Store symbols and relations of files outside `root` or
+/// excluded by the config (including generated sources).
+fn restrict_to_project(
+    mut data: reader::IndexStoreData,
+    root: &Path,
+    config: &Config,
+    include_set: &Option<globset::GlobSet>,
+    exclude_set: &globset::GlobSet,
+) -> reader::IndexStoreData {
+    let keep = |file: &str| {
+        Path::new(file)
+            .strip_prefix(root)
+            .is_ok_and(|relative| config.should_include(relative, include_set, exclude_set))
+    };
+    data.nodes.retain(|n| keep(&n.location.file));
+    let kept: std::collections::HashSet<&str> = data.nodes.iter().map(|n| n.id.as_str()).collect();
+    data.edges.retain(|e| match &e.location {
+        Some(loc) => keep(&loc.file),
+        None => kept.contains(e.source.as_str()),
+    });
+    data.file_nodes.retain(|file, _| keep(file));
+    data
 }
 
 /// Write Index Store data to the database.
@@ -769,4 +802,97 @@ fn enrich_with_swift_syntax(
         );
     }
     Ok(enriched)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, SymbolKind};
+
+    fn node(id: &str, file: &str) -> GraphNode {
+        GraphNode {
+            id: id.into(),
+            name: id.into(),
+            qualified_name: id.into(),
+            kind: SymbolKind::Function,
+            sub_kind: None,
+            location: Location {
+                file: file.into(),
+                line: 1,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            },
+            signature: None,
+            attributes: vec![],
+            access_level: AccessLevel::Internal,
+            container_usr: None,
+            doc_comment: None,
+            metrics: None,
+        }
+    }
+
+    fn edge(source: &str, target: &str, file: &str) -> GraphEdge {
+        GraphEdge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Calls,
+            location: Some(Location {
+                file: file.into(),
+                line: 2,
+                column: 1,
+                end_line: None,
+                end_column: None,
+            }),
+            is_implicit: false,
+            ambiguous: false,
+        }
+    }
+
+    #[test]
+    fn index_store_data_is_restricted_to_project_sources() {
+        let root = Path::new("/p/ios");
+        let files = [
+            ("app", "/p/ios/App/Feature.swift"),
+            (
+                "dep",
+                "/Users/me/DerivedData/SourcePackages/checkouts/Snap/Diff.swift",
+            ),
+            (
+                "gen",
+                "/p/ios/Build/DerivedSources/GeneratedStringSymbols_Localizable.swift",
+            ),
+            ("pods", "/p/ios/Pods/X/Y.swift"),
+        ];
+        let mut data = reader::IndexStoreData::default();
+        for (id, file) in files {
+            data.nodes.push(node(id, file));
+            data.file_nodes
+                .insert(file.to_string(), vec![id.to_string()]);
+        }
+        data.edges
+            .push(edge("app", "dep", "/p/ios/App/Feature.swift"));
+        data.edges.push(edge(
+            "dep",
+            "app",
+            "/Users/me/DerivedData/SourcePackages/checkouts/Snap/Diff.swift",
+        ));
+        let config = Config::default();
+        let data = restrict_to_project(
+            data,
+            root,
+            &config,
+            &config.include_globset(),
+            &config.exclude_globset(),
+        );
+        let ids: Vec<&str> = data.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert_eq!(ids, vec!["app"]);
+        // Calls from project code to dependencies stay (external targets)
+        assert_eq!(data.edges.len(), 1);
+        assert_eq!(data.edges[0].source, "app");
+        assert_eq!(
+            data.file_nodes.keys().collect::<Vec<_>>(),
+            vec!["/p/ios/App/Feature.swift"]
+        );
+    }
 }

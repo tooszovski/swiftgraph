@@ -41,6 +41,30 @@ pub struct Config {
     /// Audit rule settings.
     #[serde(default)]
     pub audit: AuditConfig,
+    /// Index generated sources (SwiftGen, Xcode `DerivedSources`,
+    /// `GeneratedStringSymbols_*`, `*.generated.swift`). Off by default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub index_generated: bool,
+}
+
+/// Whether `path` looks like generated code: Xcode `DerivedSources`,
+/// `Generated`/`SwiftGen` directories, `Generated*` files such as
+/// `GeneratedStringSymbols_Localizable.swift` and `GeneratedAssetSymbols`,
+/// `*.generated.swift`, and `resource_bundle_accessor.swift`.
+pub fn is_generated(path: &Path) -> bool {
+    let mut components = path.components().peekable();
+    while let Some(c) = components.next() {
+        let name = c.as_os_str().to_string_lossy();
+        if components.peek().is_none() {
+            return name.starts_with("Generated")
+                || name.ends_with(".generated.swift")
+                || name == "resource_bundle_accessor.swift";
+        }
+        if matches!(name.as_ref(), "DerivedSources" | "Generated" | "SwiftGen") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Per-project audit settings.
@@ -102,6 +126,7 @@ impl Default for Config {
             project_dir: None,
             resolution: ResolutionConfig::default(),
             audit: AuditConfig::default(),
+            index_generated: false,
         }
     }
 }
@@ -187,7 +212,7 @@ impl Config {
         exclude_set: &GlobSet,
     ) -> bool {
         // Check exclude first
-        if exclude_set.is_match(path) {
+        if exclude_set.is_match(path) || (!self.index_generated && is_generated(path)) {
             return false;
         }
         // If include patterns exist, path must match at least one
@@ -201,6 +226,31 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_sources_are_excluded_by_default() {
+        let config = Config::default();
+        let incl = config.include_globset();
+        let excl = config.exclude_globset();
+        for generated in [
+            "Build/Auth.build/DerivedSources/GeneratedStringSymbols_Localizable.swift",
+            "App/GeneratedAssetSymbols.swift",
+            "App/Strings.generated.swift",
+            "Modules/UI/SwiftGen/Assets.swift",
+            "X/resource_bundle_accessor.swift",
+        ] {
+            assert!(
+                !config.should_include(Path::new(generated), &incl, &excl),
+                "{generated}"
+            );
+        }
+        assert!(config.should_include(Path::new("App/GeneratorView.swift"), &incl, &excl));
+        let opted_in = Config {
+            index_generated: true,
+            ..Config::default()
+        };
+        assert!(opted_in.should_include(Path::new("App/Strings.generated.swift"), &incl, &excl));
+    }
 
     #[test]
     fn written_default_config_includes_everything_outside_excludes() {

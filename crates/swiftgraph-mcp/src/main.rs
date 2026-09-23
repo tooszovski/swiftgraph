@@ -38,6 +38,12 @@ enum Command {
         #[arg(long)]
         index_store_path: Option<PathBuf>,
     },
+    /// Show project, index and backend status
+    Status {
+        /// Project root path
+        #[arg(long)]
+        project: Option<PathBuf>,
+    },
     /// Start MCP server
     Serve {
         /// Enable MCP mode (JSON-RPC over stdin/stdout)
@@ -227,6 +233,11 @@ async fn main() -> Result<()> {
         } => {
             let root = get_project_root(project);
             cmd_index(&root, force, index_store_path.as_deref())?;
+        }
+        Command::Status { project } => {
+            let root = get_project_root(project);
+            let result = tools::status::get_status(&root)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Serve { mcp, project } => {
             let root = get_project_root(project);

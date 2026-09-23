@@ -267,6 +267,7 @@ struct Bar: View {
             Button { b() } label: { Image("b").frame(width: 24, height: 24) }
         }
         Image("c").frame(width: 10, height: 10).frame(width: 30, height: 30).onTapGesture { c() }
+        content.frame(height: 34).frame(maxWidth: .infinity).onTapGesture(perform: tap)
     }
 }
 "#;
@@ -274,7 +275,7 @@ struct Bar: View {
         .iter()
         .map(|i| (i.line, i.column))
         .collect();
-    assert_eq!(lines, vec![(9, Some(49))]);
+    assert_eq!(lines, vec![(9, Some(49)), (10, Some(17))]);
 }
 
 #[test]

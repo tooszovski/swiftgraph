@@ -472,7 +472,8 @@ impl AuditRule for SendableViolation {
         Category::Concurrency
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Medium: sampled precision 0.55 after pattern fixes.
+        Severity::Medium
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

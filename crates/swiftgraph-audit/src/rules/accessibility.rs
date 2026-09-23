@@ -367,7 +367,7 @@ impl AuditRule for SmallTouchTarget {
             // Only the outermost frame of a chain counts; hit testing off
             // means it is not a target at all
             if after.iter().any(enlarges)
-                || after.contains(&"frame")
+                || later_frame_sets_height(m.call, ctx.source)
                 || after.contains(&"allowsHitTesting")
                 || in_toolbar(m.call, ctx.source)
             {
@@ -454,6 +454,29 @@ fn in_toolbar(node: tree_sitter::Node, source: &str) -> bool {
             return true;
         }
         current = n.parent();
+    }
+    false
+}
+
+/// Whether a `.frame(...)` applied after `call` in its modifier chain sets a
+/// height too (then that frame decides the size).
+fn later_frame_sets_height(call: tree_sitter::Node, source: &str) -> bool {
+    let mut current = call;
+    while let Some(nav) = current
+        .parent()
+        .filter(|n| n.kind() == "navigation_expression")
+    {
+        let Some(next) = nav.parent().filter(|n| n.kind() == "call_expression") else {
+            break;
+        };
+        if crate::rules::callee_name(next, source) == Some("frame")
+            && next
+                .named_child(1)
+                .is_some_and(|args| node_text(args, source).contains("height"))
+        {
+            return true;
+        }
+        current = next;
     }
     false
 }

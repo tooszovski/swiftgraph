@@ -101,7 +101,8 @@ impl AuditRule for TryOptionalDecoding {
         Category::Codable
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Medium: sampled precision 0.47 after pattern fixes.
+        Severity::Medium
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

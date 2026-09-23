@@ -82,6 +82,7 @@ pub fn delete_file_data(conn: &Connection, path: &str) -> SqlResult<()> {
     )?;
     conn.execute("DELETE FROM nodes WHERE file = ?1", [path])?;
     conn.execute("DELETE FROM name_refs WHERE file = ?1", [path])?;
+    conn.execute("DELETE FROM member_types WHERE file = ?1", [path])?;
     Ok(())
 }
 

@@ -49,6 +49,7 @@ impl TreeSitterParser {
             edges: Vec::new(),
             calls: Vec::new(),
             references: Vec::new(),
+            member_types: Vec::new(),
         };
 
         let file_path = path.to_string_lossy().to_string();
@@ -57,7 +58,7 @@ impl TreeSitterParser {
 
         // Second pass: call sites with what this file tells about their
         // receivers, and names referenced outside of calls.
-        (result.calls, result.references) =
+        (result.calls, result.references, result.member_types) =
             CallCollector::new(source, &file_path, root).collect(root);
 
         Ok(result)
@@ -201,6 +202,15 @@ pub enum Receiver {
     Typed(String),
     /// `super.foo()` inside the named type.
     Super(String),
+    /// A property of a type whose declaration is not in this file:
+    /// `x.foo()` / `self.x.foo()` inside `owner`, or `Owner.shared.foo()`.
+    /// Resolved through the project-wide table of property types.
+    Member {
+        /// Type that declares (or inherits) the property.
+        owner: String,
+        /// Property name.
+        member: String,
+    },
     /// Any other expression; the type is unknown.
     Unknown,
 }
@@ -233,6 +243,8 @@ type Frame = std::collections::HashMap<String, Option<String>>;
 enum ExprType {
     Named(String),
     Super,
+    /// Property `member` of `owner`, declared outside this file.
+    Member(String, String),
 }
 
 /// Walks declarations and function bodies and records call sites.
@@ -271,9 +283,27 @@ impl<'s> CallCollector<'s> {
         }
     }
 
-    fn collect(mut self, root: Node) -> (Vec<CallSite>, Vec<String>) {
+    fn collect(mut self, root: Node) -> (Vec<CallSite>, Vec<String>, Vec<MemberType>) {
         self.walk(root);
-        (self.calls, self.references.into_iter().collect())
+        let mut member_types: Vec<MemberType> = self
+            .members
+            .iter()
+            .flat_map(|(owner, frame)| {
+                frame.iter().filter_map(move |(member, ty)| {
+                    ty.as_ref().map(|ty| MemberType {
+                        owner: owner.clone(),
+                        member: member.clone(),
+                        type_name: ty.clone(),
+                    })
+                })
+            })
+            .collect();
+        member_types.sort_by(|a, b| (&a.owner, &a.member).cmp(&(&b.owner, &b.member)));
+        (
+            self.calls,
+            self.references.into_iter().collect(),
+            member_types,
+        )
     }
 
     fn text(&self, node: Node) -> &'s str {
@@ -384,7 +414,13 @@ impl<'s> CallCollector<'s> {
                 {
                     return ty.clone().map(ExprType::Named);
                 }
-                starts_uppercase(name).then(|| ExprType::Named(name.to_string()))
+                if starts_uppercase(name) {
+                    return Some(ExprType::Named(name.to_string()));
+                }
+                // Probably a property declared in another file or extension
+                self.types
+                    .last()
+                    .map(|owner| ExprType::Member(owner.clone(), name.to_string()))
             }
             "navigation_expression" => {
                 let ExprType::Named(base) = self.expr_type(expr.child_by_field_name("target")?)?
@@ -392,11 +428,10 @@ impl<'s> CallCollector<'s> {
                     return None;
                 };
                 let property = nav_suffix(&expr).map(|n| self.text(n))?;
-                self.members
-                    .get(&base)?
-                    .get(property)?
-                    .clone()
-                    .map(ExprType::Named)
+                match self.members.get(&base).and_then(|m| m.get(property)) {
+                    Some(known) => known.clone().map(ExprType::Named),
+                    None => Some(ExprType::Member(base, property.to_string())),
+                }
             }
             "postfix_expression" => self.expr_type(expr.child_by_field_name("target")?),
             "call_expression" => {
@@ -432,6 +467,7 @@ impl<'s> CallCollector<'s> {
                     .and_then(|t| self.expr_type(t))
                 {
                     Some(ExprType::Named(ty)) => Receiver::Typed(ty),
+                    Some(ExprType::Member(owner, member)) => Receiver::Member { owner, member },
                     Some(ExprType::Super) => self
                         .types
                         .last()
@@ -726,6 +762,17 @@ pub struct ParseResult {
     /// Distinct identifiers referenced outside of call position (member
     /// reads, type annotations, arguments), sorted.
     pub references: Vec<String>,
+    /// Declared types of properties of the types in this file.
+    pub member_types: Vec<MemberType>,
+}
+
+/// `owner.member` has declared type `type_name` (`let member: TypeName`,
+/// `var member = TypeName()`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberType {
+    pub owner: String,
+    pub member: String,
+    pub type_name: String,
 }
 
 /// Map a tree-sitter-swift node to a SymbolKind.
@@ -1213,7 +1260,15 @@ class MyService {
 
         assert_eq!(site("fetchItems").receiver, Receiver::Implicit);
         assert_eq!(site("fetchItems").scope, vec!["MyService".to_string()]);
-        assert_eq!(site("process").receiver, Receiver::Unknown);
+        // `helper` is not declared in this file: maybe a property of MyService
+        // declared elsewhere, resolved through the project's property types.
+        assert_eq!(
+            site("process").receiver,
+            Receiver::Member {
+                owner: "MyService".to_string(),
+                member: "helper".to_string()
+            }
+        );
         let update = site("update");
         assert_eq!(update.receiver, typed("MyService"));
         assert_eq!(

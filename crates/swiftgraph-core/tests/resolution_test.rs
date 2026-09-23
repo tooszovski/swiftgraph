@@ -234,3 +234,18 @@ fn initializers_are_declarations_and_constructor_targets() {
     let convenience = id(&conn, "Session.init()", None);
     assert_eq!(confident(&conn, &convenience), vec!["Session.init(token:)"]);
 }
+
+#[test]
+fn property_types_declared_in_other_files_type_the_receiver() {
+    let (_d, conn) = indexed();
+    let total = id(&conn, "Checkout.total()", None);
+    let mut edges = calls(&conn, &total);
+    edges.dedup();
+    assert_eq!(
+        edges,
+        vec![
+            ("PricingService.compute()".to_string(), false),
+            ("TaxService.compute()".to_string(), false),
+        ]
+    );
+}

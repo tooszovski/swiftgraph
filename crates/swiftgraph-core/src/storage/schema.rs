@@ -67,6 +67,15 @@ CREATE TABLE IF NOT EXISTS name_refs (
     PRIMARY KEY (file, name)
 ) WITHOUT ROWID;
 
+-- Declared property types per type, for typing receivers across files.
+CREATE TABLE IF NOT EXISTS member_types (
+    file      TEXT NOT NULL,
+    owner     TEXT NOT NULL,
+    member    TEXT NOT NULL,
+    type_name TEXT NOT NULL,
+    PRIMARY KEY (file, owner, member)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

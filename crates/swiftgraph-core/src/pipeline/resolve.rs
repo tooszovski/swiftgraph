@@ -413,6 +413,8 @@ pub(crate) struct Resolver {
     supertypes: HashMap<String, Vec<String>>,
     /// Every declared base name.
     names: HashSet<String>,
+    /// Type name → property → declared type, from every file.
+    member_types: HashMap<String, HashMap<String, String>>,
     library: HashSet<&'static str>,
     max_candidates: usize,
 }
@@ -447,6 +449,7 @@ impl Resolver {
             all_members: HashMap::new(),
             supertypes: HashMap::new(),
             names: HashSet::new(),
+            member_types: HashMap::new(),
             library: LIBRARY_NAMES.iter().copied().collect(),
             max_candidates: config.max_candidates.max(1),
         };
@@ -535,7 +538,48 @@ impl Resolver {
                 }
             }
         }
+        let mut stmt = conn.prepare("SELECT owner, member, type_name FROM member_types")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (owner, member, ty) = row?;
+            resolver
+                .member_types
+                .entry(owner)
+                .or_default()
+                .insert(member, ty);
+        }
         Ok(resolver)
+    }
+
+    /// Declared type of property `member` of `owner` or of its nearest
+    /// supertype declaring it.
+    fn member_type(&self, owner: &str, member: &str) -> Option<&str> {
+        let mut seen: HashSet<&str> = HashSet::from([owner]);
+        let mut level = vec![owner];
+        while !level.is_empty() {
+            if let Some(ty) = level
+                .iter()
+                .find_map(|t| self.member_types.get(*t)?.get(member))
+            {
+                return Some(ty);
+            }
+            let mut next = Vec::new();
+            for t in level {
+                for p in self.parents(t) {
+                    if seen.insert(p) {
+                        next.push(p);
+                    }
+                }
+            }
+            level = next;
+        }
+        None
     }
 
     /// Members named `name` of `ty` or, if it has none, of its nearest
@@ -582,6 +626,24 @@ impl Resolver {
         self.names.contains(name)
     }
 
+    /// Whether the call's receiver type stays unknown after looking up
+    /// property types across the project.
+    pub(crate) fn receiver_unknown(&self, call: &CallSite) -> bool {
+        match &call.receiver {
+            Receiver::Unknown => true,
+            Receiver::Member { owner, member } => self.member_type(owner, member).is_none(),
+            _ => false,
+        }
+    }
+
+    /// Candidates for a call on a receiver of unknown type.
+    fn unknown_receiver(&self, name: &str) -> Vec<usize> {
+        if self.library.contains(name) {
+            return Vec::new();
+        }
+        self.all_members.get(name).cloned().unwrap_or_default()
+    }
+
     /// Initializers of a type candidate that fit the call's arguments, or
     /// the type itself (implicit memberwise/default initializers).
     fn constructor_targets(&self, idx: usize, call: &CallSite) -> Vec<usize> {
@@ -617,8 +679,11 @@ impl Resolver {
                 .unwrap_or_else(|| self.top_level.get(name).cloned().unwrap_or_default()),
             Receiver::Typed(ty) => self.members_named(ty, name, true),
             Receiver::Super(ty) => self.members_named(ty, name, false),
-            Receiver::Unknown if self.library.contains(name) => Vec::new(),
-            Receiver::Unknown => self.all_members.get(name).cloned().unwrap_or_default(),
+            Receiver::Member { owner, member } => match self.member_type(owner, member) {
+                Some(ty) => self.members_named(ty, name, true),
+                None => self.unknown_receiver(name),
+            },
+            Receiver::Unknown => self.unknown_receiver(name),
         };
 
         // `Type(...)`: the matching initializer when the type declares any

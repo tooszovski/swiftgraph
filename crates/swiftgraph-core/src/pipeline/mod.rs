@@ -166,7 +166,7 @@ pub fn index_directory_with_options(
     // On force reindex, start from an empty graph (FTS is kept in sync by triggers)
     if force {
         conn.execute_batch(
-            "DELETE FROM edges; DELETE FROM name_refs; DELETE FROM nodes; DELETE FROM files;",
+            "DELETE FROM edges; DELETE FROM name_refs; DELETE FROM member_types; DELETE FROM nodes; DELETE FROM files;",
         )?;
     }
 
@@ -451,6 +451,22 @@ fn resolve_calls(
     {
         return Ok(stats);
     }
+    // Property types of the parsed files, read back with all others
+    {
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR REPLACE INTO member_types (file, owner, member, type_name) VALUES (?1, ?2, ?3, ?4)",
+            )?;
+            for (path, _, result) in parsed {
+                let file = path.to_string_lossy();
+                for m in &result.member_types {
+                    insert.execute(rusqlite::params![file, m.owner, m.member, m.type_name])?;
+                }
+            }
+        }
+        tx.commit()?;
+    }
     let resolver = resolve::Resolver::load(conn, config)?;
 
     let tx = conn.unchecked_transaction()?;
@@ -470,7 +486,7 @@ fn resolve_calls(
         }
         for call in parsed.iter().flat_map(|(_, _, r)| &r.calls) {
             stats.sites += 1;
-            if call.receiver == crate::tree_sitter::parser::Receiver::Unknown {
+            if resolver.receiver_unknown(call) {
                 stats.unknown_receiver += 1;
             }
             let (targets, ambiguous) = match resolver.resolve(call) {

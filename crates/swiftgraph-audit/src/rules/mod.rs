@@ -329,3 +329,21 @@ pub fn callee_name<'a>(call: Node<'a>, source: &'a str) -> Option<&'a str> {
         _ => None,
     }
 }
+
+/// 1-based line of a declaration's keyword (`class`, `struct`, ...), which
+/// follows attributes such as `@available(...)` on earlier lines.
+pub fn declaration_line(node: Node, source: &str) -> u32 {
+    (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .find(|c| {
+            !c.is_named()
+                && matches!(
+                    node_text(*c, source),
+                    "class" | "struct" | "enum" | "actor" | "extension" | "protocol"
+                )
+        })
+        .unwrap_or(node)
+        .start_position()
+        .row as u32
+        + 1
+}

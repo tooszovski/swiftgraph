@@ -212,6 +212,7 @@ Logger.info("\(token.name) allowance")
 print("tokenItem: \(tokenItem.symbol)")
 Logger.debug("Loaded \(tokens.count) tokens")
 AppLogger.error("Failed to save web credential", error: error)
+VisaLogger.error("missing access token", error: HandlerError.missingAccessToken)
 print("Password reset tapped")
 "#;
     assert!(check(&rule, noise).is_empty(), "{:?}", check(&rule, noise));
@@ -344,4 +345,11 @@ fn runner_respects_config_include_and_exclude() {
         .collect();
     files.dedup();
     assert_eq!(files, vec!["Holder.swift".to_string()]);
+}
+
+#[test]
+fn conc001_points_at_the_class_line_not_its_attributes() {
+    let rule = rules::concurrency::MissingMainActor;
+    let source = "@usableFromInline\nfinal class VM: ObservableObject {}\n\n@available(iOS, deprecated: 100000, message: \"x\")\n// note\nclass Screen: UIViewController {}\n";
+    assert_eq!(lines(&check(&rule, source)), vec![2, 6]);
 }

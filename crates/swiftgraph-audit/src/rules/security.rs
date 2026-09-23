@@ -239,10 +239,13 @@ fn identifier_words(ident: &str) -> Vec<String> {
     words
 }
 
-/// `line` without string literal text, keeping interpolations
-/// (`"pwd \(password)"` → `" \(password)"`-like code only).
-fn code_only(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
+/// What a log line actually writes out: the code inside string
+/// interpolations (`"pwd \\(password)"`) and unlabeled arguments of the call
+/// (`NSLog("%@", privateKey)`). Message text and labeled arguments such as
+/// `error: Error.missingAccessToken` are left out.
+fn logged_code(line: &str) -> String {
+    let mut outer = String::with_capacity(line.len());
+    let mut interpolated = String::new();
     let mut in_string = false;
     let mut depth = 0usize; // parentheses inside an interpolation
     let mut chars = line.chars().peekable();
@@ -252,12 +255,15 @@ fn code_only(line: &str) -> String {
                 '\\' if chars.peek() == Some(&'(') => {
                     chars.next();
                     depth = 1;
-                    out.push(' ');
+                    interpolated.push(' ');
                 }
                 '\\' => {
                     chars.next();
                 }
-                '"' => in_string = false,
+                '"' => {
+                    in_string = false;
+                    outer.push('_');
+                }
                 _ => {}
             }
             continue;
@@ -268,24 +274,55 @@ fn code_only(line: &str) -> String {
                 ')' => depth -= 1,
                 _ => {}
             }
-            if depth == 0 {
-                out.push(' ');
-                continue;
+            if depth > 0 {
+                interpolated.push(c);
             }
-        } else if c == '"' {
-            in_string = true;
-            out.push(' ');
             continue;
         }
-        out.push(c);
+        if c == '"' {
+            in_string = true;
+            continue;
+        }
+        outer.push(c);
     }
-    out
+
+    // Unlabeled arguments of the first call on the line
+    if let Some(open) = outer.find('(') {
+        let mut level = 0usize;
+        let mut arg = String::new();
+        let mut args = Vec::new();
+        for c in outer[open + 1..].chars() {
+            match c {
+                '(' | '[' => level += 1,
+                ')' | ']' if level == 0 => break,
+                ')' | ']' => level -= 1,
+                ',' if level == 0 => {
+                    args.push(std::mem::take(&mut arg));
+                    continue;
+                }
+                _ => {}
+            }
+            arg.push(c);
+        }
+        args.push(arg);
+        for arg in args {
+            let trimmed = arg.trim_start();
+            let label_len = trimmed
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(trimmed.len());
+            let labeled = label_len > 0 && trimmed[label_len..].trim_start().starts_with(':');
+            if !labeled {
+                interpolated.push(' ');
+                interpolated.push_str(&arg);
+            }
+        }
+    }
+    interpolated
 }
 
-/// The credential term found in the code of `line` (not in its message
-/// text), if any.
+/// The credential term written by the log call on `line`, if any.
 fn sensitive_term(line: &str) -> Option<String> {
-    let code = code_only(line);
+    let code = logged_code(line);
     for ident in code
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())

@@ -87,7 +87,7 @@ impl AuditRule for MissingMainActor {
                     "`{name}` inherits UIViewController or ObservableObject but is missing @MainActor{note}"
                 ),
                 file: ctx.file_path.to_string(),
-                line: decl.start_position().row as u32 + 1,
+                line: crate::rules::declaration_line(decl, ctx.source),
                 symbol: Some(name),
                 fix: Some("Add @MainActor to the class declaration".into()),
             });

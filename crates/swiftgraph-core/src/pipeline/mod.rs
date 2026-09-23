@@ -247,14 +247,20 @@ pub fn index_directory_with_options(
     }
 
     // 3. Tree-sitter for remaining files (or all files if no Index Store)
-    let files_for_treesitter: Vec<_> = if used_index_store {
+    let (covered_files, files_for_treesitter): (Vec<_>, Vec<_>) = if used_index_store {
         swift_files
             .into_iter()
-            .filter(|p| !index_store_files.contains(&p.to_string_lossy().to_string()))
-            .collect()
+            .partition(|p| index_store_files.contains(&p.to_string_lossy().to_string()))
     } else {
-        swift_files
+        (Vec::new(), swift_files)
     };
+
+    // Files the store covers keep its USR nodes and edges; tree-sitter adds
+    // what the store lacks (attributes, access, signature, extent, imports).
+    let stitched = stitch_index_store_nodes(&conn, &covered_files)?;
+    if stitched > 0 {
+        info!("tree-sitter details added to {stitched} Index Store nodes");
+    }
     let files_for_treesitter_empty = files_for_treesitter.is_empty();
 
     // Filter by hash for incremental reindex
@@ -375,7 +381,7 @@ pub fn index_directory_with_options(
 
     // 4. Optional swift-syntax enrichment (one batch parser process)
     let parser = match swift_syntax {
-        SwiftSyntaxMode::Auto if !parse_results.is_empty() => {
+        SwiftSyntaxMode::Auto if !parse_results.is_empty() || !covered_files.is_empty() => {
             crate::swift_syntax::SwiftSyntaxParser::discover()
         }
         SwiftSyntaxMode::Parser(p) => Some(p.clone()),
@@ -383,8 +389,11 @@ pub fn index_directory_with_options(
     };
     let mut nodes_enriched = 0;
     if let Some(parser) = parser {
-        let files: Vec<std::path::PathBuf> =
-            parse_results.iter().map(|(p, _, _)| p.clone()).collect();
+        let files: Vec<std::path::PathBuf> = parse_results
+            .iter()
+            .map(|(p, _, _)| p.clone())
+            .chain(covered_files.iter().cloned())
+            .collect();
         nodes_enriched = enrich_with_swift_syntax(&conn, &parser, &files)?;
         if nodes_enriched > 0 {
             info!("swift-syntax enriched {nodes_enriched} nodes");
@@ -429,6 +438,90 @@ pub fn index_directory_with_options(
         nodes_enriched,
         index_store_note: None,
     })
+}
+
+/// Add tree-sitter details to the Index Store nodes of `files`: attributes,
+/// access level (the store often records none), signature, extent and
+/// sub-kind, matched by file, base name and the declaration's line range.
+/// Import declarations, which the store does not record, are added as
+/// tree-sitter nodes. Returns the number of nodes updated.
+fn stitch_index_store_nodes(
+    conn: &rusqlite::Connection,
+    files: &[std::path::PathBuf],
+) -> Result<usize, PipelineError> {
+    if files.is_empty() {
+        return Ok(0);
+    }
+    let parsed: Vec<_> = files
+        .par_iter()
+        .filter_map(|path| {
+            let mut parser = TreeSitterParser::new().ok()?;
+            Some((path.clone(), parser.parse_file(path).ok()?))
+        })
+        .collect();
+
+    let tx = conn.unchecked_transaction()?;
+    let mut stitched = 0;
+    {
+        let mut store_nodes = tx.prepare(
+            "SELECT id, name, line, access_level FROM nodes WHERE file = ?1 AND id NOT LIKE 'ts::%'",
+        )?;
+        let mut update = tx.prepare(
+            "UPDATE nodes SET attributes = ?1, access_level = ?2,
+                              signature = COALESCE(signature, ?3),
+                              end_line = ?4, end_col = ?5,
+                              sub_kind = COALESCE(sub_kind, ?6)
+             WHERE id = ?7",
+        )?;
+        for (path, result) in &parsed {
+            let file = path.to_string_lossy();
+            let candidates: Vec<(String, String, u32, String)> = store_nodes
+                .query_map([file.as_ref()], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            let mut used = std::collections::HashSet::new();
+            for ts in &result.nodes {
+                if ts.kind == crate::graph::SymbolKind::Import {
+                    queries::upsert_node(&tx, ts)?;
+                    continue;
+                }
+                let start = ts.location.line;
+                let end = ts.location.end_line.unwrap_or(start);
+                // The store's line is the name's line, after attributes
+                let Some((id, _, _, store_access)) = candidates
+                    .iter()
+                    .filter(|(id, name, line, _)| {
+                        !used.contains(id)
+                            && name.split('(').next() == Some(ts.name.as_str())
+                            && (start..=end).contains(line)
+                    })
+                    .min_by_key(|(_, _, line, _)| line - start)
+                else {
+                    continue;
+                };
+                used.insert(id.clone());
+                let access = if store_access == "Internal" {
+                    format!("{:?}", ts.access_level)
+                } else {
+                    store_access.clone()
+                };
+                let attributes = serde_json::to_string(&ts.attributes).unwrap_or_default();
+                update.execute(rusqlite::params![
+                    attributes,
+                    access,
+                    ts.signature,
+                    ts.location.end_line,
+                    ts.location.end_column,
+                    ts.sub_kind.map(|k| format!("{k:?}")),
+                    id
+                ])?;
+                stitched += 1;
+            }
+        }
+    }
+    tx.commit()?;
+    Ok(stitched)
 }
 
 /// Drop Index Store symbols and relations of files outside `root` or
@@ -682,7 +775,9 @@ fn enrich_with_swift_syntax(
     let mut failed = 0;
     {
         let mut find = tx.prepare(
-            "SELECT id FROM nodes WHERE file = ?1 AND name = ?2 AND ABS(line - ?3) <= 2
+            "SELECT id FROM nodes WHERE file = ?1
+               AND (name = ?2 OR substr(name, 1, length(?2) + 1) = ?2 || '(')
+               AND ABS(line - ?3) <= 2
              ORDER BY ABS(line - ?3), line, id LIMIT 1",
         )?;
         let mut update = tx.prepare(

@@ -64,7 +64,8 @@ fn switching_backend_rebuilds_instead_of_mixing() {
     let conn = storage::open_db(&db).unwrap();
     let ts_nodes: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM nodes WHERE id LIKE 'ts::%' AND file LIKE '%/Sources/%'",
+            // Imports stay tree-sitter nodes: the store does not record them
+            "SELECT COUNT(*) FROM nodes WHERE id LIKE 'ts::%' AND kind != 'import' AND file LIKE '%/Sources/%'",
             [],
             |r| r.get(0),
         )
@@ -245,4 +246,64 @@ fn type_references_become_edges() {
         .edges
         .iter()
         .any(|e| e.target == tag.id && e.kind == EdgeKind::References));
+}
+
+#[test]
+fn hybrid_nodes_are_stitched_with_tree_sitter_details() {
+    let root = fixture_or_skip!();
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("db.sqlite");
+    let result = pipeline::index_directory_with_options(
+        &db,
+        &root,
+        true,
+        swiftgraph_core::project::detect_project(&root)
+            .unwrap()
+            .index_store_path
+            .as_deref(),
+        &pipeline::SwiftSyntaxMode::Disabled,
+    )
+    .unwrap();
+    assert!(result.strategy.uses_index_store());
+    let conn = storage::open_db(&db).unwrap();
+
+    let vm = queries::resolve_symbol(&conn, "CounterViewModel")
+        .unwrap()
+        .unwrap();
+    assert!(vm.id.starts_with("s:"), "{}", vm.id);
+    assert!(
+        vm.attributes.iter().any(|a| a == "@MainActor"),
+        "{:?}",
+        vm.attributes
+    );
+    assert!(vm.location.end_line.is_some());
+    assert!(vm.signature.is_some());
+
+    let reset = conn
+        .query_row(
+            "SELECT access_level FROM nodes WHERE name = 'reset()' AND id LIKE 's:%'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap();
+    assert_eq!(reset, "Private");
+
+    // Imports come from tree-sitter for files the store covers
+    let imports: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind = 'import' AND name = 'Foundation' AND file LIKE '%Counter.swift'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(imports, 1);
+    // No tree-sitter duplicates of declarations the store has
+    let dupes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM nodes WHERE id LIKE 'ts::%' AND kind != 'import' AND file LIKE '%/Sources/%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dupes, 0);
 }

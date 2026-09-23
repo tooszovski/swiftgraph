@@ -2,7 +2,7 @@
 //!
 //! Finds circular dependencies at the file level (import/usage cycles).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use serde::Serialize;
@@ -53,8 +53,9 @@ pub fn detect_cycles_from_conn(
     // Build file-level dependency graph
     let edges = queries::get_cross_file_edges(conn, path_filter, 50000)?;
 
-    let mut file_deps: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut all_files: HashSet<String> = HashSet::new();
+    // Ordered collections: which cycles are found depends on traversal order.
+    let mut file_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut all_files: BTreeSet<String> = BTreeSet::new();
 
     for (source_file, target_file) in &edges {
         if source_file != target_file {
@@ -97,7 +98,7 @@ pub fn detect_cycles_from_conn(
 
 fn dfs_cycles(
     node: &str,
-    graph: &HashMap<String, HashSet<String>>,
+    graph: &BTreeMap<String, BTreeSet<String>>,
     visited: &mut HashSet<String>,
     on_stack: &mut HashSet<String>,
     path: &mut Vec<String>,

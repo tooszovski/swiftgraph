@@ -60,6 +60,7 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
 
     // Find Swift files
     let swift_files: Vec<_> = WalkDir::new(project_root)
+        .sort_by_file_name()
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| {
@@ -87,9 +88,17 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
         .filter(|issue| issue.severity >= options.min_severity)
         .collect();
 
-    // Sort by severity (highest first)
+    // Sort by severity (highest first), then location, so output and the
+    // per-category cap below are deterministic
     let mut issues = all_issues;
-    issues.sort_by_key(|i| std::cmp::Reverse(i.severity));
+    issues.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then_with(|| a.file.cmp(&b.file))
+            .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.rule.cmp(&b.rule))
+            .then_with(|| a.message.cmp(&b.message))
+    });
 
     // Per-category cap: ensure each category gets fair representation
     if issues.len() > options.max_issues {
@@ -267,5 +276,34 @@ let url = URL(string: "http://localhost:8080/api")!
         let rule = rules::security::AtsBypass;
         let issues = rule.check(&ctx);
         assert!(issues.is_empty(), "localhost should not trigger SEC-004");
+    }
+
+    #[test]
+    fn audit_output_is_ordered_by_severity_file_line_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let body = "class V: UIView {\n    var delegate: D?\n}\nlet u = URL(string: \"http://api.example.com\")!\nclass W: UIView {\n    var delegate: D?\n}\n";
+        for name in ["zeta", "alpha", "mid", "beta", "omega", "gamma"] {
+            std::fs::write(dir.path().join(format!("{name}.swift")), body).unwrap();
+        }
+        let key = |i: &AuditIssue| {
+            (
+                std::cmp::Reverse(i.severity),
+                i.file.clone(),
+                i.line,
+                i.rule.clone(),
+            )
+        };
+        for max_issues in [500, 5] {
+            let options = AuditOptions {
+                max_issues,
+                ..AuditOptions::default()
+            };
+            let result = run_audit(dir.path(), &options).unwrap();
+            assert!(result.issues.len() >= 2);
+            let keys: Vec<_> = result.issues.iter().map(key).collect();
+            let mut sorted = keys.clone();
+            sorted.sort();
+            assert_eq!(keys, sorted, "max_issues={max_issues}");
+        }
     }
 }

@@ -44,6 +44,55 @@ pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
     Ok(conn)
 }
 
+/// Detects changes to the database made by any connection or process.
+///
+/// Keeps one read-only connection open and combines the file identity with
+/// `PRAGMA data_version`, which changes whenever another connection commits.
+/// Use the returned generation as part of cache keys.
+pub struct ChangeWatcher {
+    path: std::path::PathBuf,
+    conn: Option<(u64, Connection)>,
+}
+
+impl ChangeWatcher {
+    /// Watch the database at `path` (it does not need to exist yet).
+    pub fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            conn: None,
+        }
+    }
+
+    /// Current database generation, or `None` if the database does not exist
+    /// or cannot be read (callers should then not cache).
+    pub fn generation(&mut self) -> Option<String> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(&self.path).ok()?;
+        if !meta.is_file() {
+            self.conn = None;
+            return None;
+        }
+        let ino = meta.ino();
+        if self.conn.as_ref().map(|(i, _)| *i) != Some(ino) {
+            let conn = Connection::open_with_flags(
+                &self.path,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                    | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            )
+            .ok()?;
+            self.conn = Some((ino, conn));
+        }
+        let (ino, conn) = self.conn.as_ref()?;
+        match conn.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)) {
+            Ok(v) => Some(format!("{ino}.{v}")),
+            Err(_) => {
+                self.conn = None;
+                None
+            }
+        }
+    }
+}
+
 /// Open an in-memory database (for tests).
 pub fn open_memory_db() -> Result<Connection, StorageError> {
     let conn = Connection::open_in_memory()?;

@@ -97,13 +97,11 @@ pub fn analyze_complexity_from_conn(
 
     // Sort
     match sort_by {
-        "fan_in" => symbols.sort_by_key(|s| std::cmp::Reverse(s.fan_in)),
-        "fan_out" => symbols.sort_by_key(|s| std::cmp::Reverse(s.fan_out)),
-        _ => symbols.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        }),
+        "fan_in" => symbols.sort_by(|a, b| b.fan_in.cmp(&a.fan_in).then_with(|| a.id.cmp(&b.id))),
+        "fan_out" => {
+            symbols.sort_by(|a, b| b.fan_out.cmp(&a.fan_out).then_with(|| a.id.cmp(&b.id)))
+        }
+        _ => symbols.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id))),
     }
 
     symbols.truncate(limit as usize);
@@ -114,7 +112,7 @@ pub fn analyze_complexity_from_conn(
         file_map.entry(s.file.clone()).or_default().push(s);
     }
 
-    let file_stats: Vec<FileComplexity> = file_map
+    let mut file_stats: Vec<FileComplexity> = file_map
         .iter()
         .map(|(file, syms)| {
             let count = syms.len() as u32;
@@ -130,6 +128,11 @@ pub fn analyze_complexity_from_conn(
             }
         })
         .collect();
+    file_stats.sort_by(|a, b| {
+        b.max_score
+            .total_cmp(&a.max_score)
+            .then_with(|| a.file.cmp(&b.file))
+    });
 
     Ok(ComplexityResult {
         symbols,

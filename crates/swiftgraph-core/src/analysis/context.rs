@@ -136,18 +136,18 @@ pub fn build_context(
         .collect();
     ranked.sort_by(|a, b| {
         b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.score)
+            .then_with(|| a.node.id.cmp(&b.node.id))
     });
     ranked.truncate(max_nodes as usize);
 
-    // 6. Collect files
-    let files: Vec<String> = ranked
+    // 6. Collect files (sorted, unique)
+    let mut files: Vec<String> = ranked
         .iter()
         .map(|r| r.node.location.file.clone())
-        .collect::<HashSet<_>>()
-        .into_iter()
         .collect();
+    files.sort();
+    files.dedup();
 
     // 7. Detect architecture pattern
     let architecture = detect_architecture(&ranked);

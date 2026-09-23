@@ -101,7 +101,11 @@ pub fn analyze_imports(
             }
         })
         .collect();
-    modules.sort_by_key(|m| std::cmp::Reverse(m.import_count));
+    modules.sort_by(|a, b| {
+        b.import_count
+            .cmp(&a.import_count)
+            .then_with(|| a.module.cmp(&b.module))
+    });
 
     let mut file_import_counts: Vec<FileImportCount> = file_to_modules
         .iter()
@@ -116,7 +120,11 @@ pub fn analyze_imports(
             }
         })
         .collect();
-    file_import_counts.sort_by_key(|f| std::cmp::Reverse(f.import_count));
+    file_import_counts.sort_by(|a, b| {
+        b.import_count
+            .cmp(&a.import_count)
+            .then_with(|| a.file.cmp(&b.file))
+    });
     file_import_counts.truncate(50);
 
     Ok(ImportsResult {

@@ -2796,6 +2796,7 @@ dependencies = [
  "serde",
  "serde_json",
  "swiftgraph-core",
+ "tempfile",
  "thiserror",
  "tracing",
  "tree-sitter",

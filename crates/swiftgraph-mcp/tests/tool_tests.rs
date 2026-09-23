@@ -492,3 +492,70 @@ fn context_finds_seed_symbols_by_prefix() {
     let json = serde_json::to_string(&result).unwrap();
     assert!(json.contains("usr:loadUsers"), "{json}");
 }
+
+// --- Response cache ---
+
+fn server_search(server: &swiftgraph_mcp::server::SwiftGraphServer, q: &str) -> String {
+    use rmcp::handler::server::wrapper::Parameters;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(
+        server.swiftgraph_search(Parameters(swiftgraph_mcp::server::SearchToolParams {
+            query: q.into(),
+            kind: None,
+            limit: Some(20),
+        })),
+    )
+}
+
+#[test]
+fn search_cache_sees_changes_made_by_another_connection() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join(".swiftgraph/db.sqlite");
+    let conn = storage::open_db(&db_path).unwrap();
+    queries::upsert_file(&conn, "A.swift", "h", 1).unwrap();
+    let alpha = make_node("usr:Alpha", "Alpha", "Alpha", SymbolKind::Struct, "A.swift");
+    queries::upsert_node(&conn, &alpha).unwrap();
+    drop(conn);
+
+    let server = swiftgraph_mcp::server::SwiftGraphServer::new(dir.path().to_path_buf());
+    assert!(server_search(&server, "Al").contains("usr:Alpha"));
+
+    // e.g. `swiftgraph index` or `watch` running in another process
+    let conn = storage::open_db(&db_path).unwrap();
+    let alpine = make_node(
+        "usr:Alpine",
+        "Alpine",
+        "Alpine",
+        SymbolKind::Struct,
+        "A.swift",
+    );
+    queries::upsert_node(&conn, &alpine).unwrap();
+    drop(conn);
+
+    assert!(
+        server_search(&server, "Al").contains("usr:Alpine"),
+        "stale cached search result"
+    );
+}
+
+#[test]
+fn search_errors_are_not_cached() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join(".swiftgraph/db.sqlite");
+    // A directory where the DB file should be makes every query fail.
+    std::fs::create_dir_all(&db_path).unwrap();
+
+    let server = swiftgraph_mcp::server::SwiftGraphServer::new(dir.path().to_path_buf());
+    assert!(server_search(&server, "Alpha").contains("error"));
+
+    std::fs::remove_dir(&db_path).unwrap();
+    let conn = storage::open_db(&db_path).unwrap();
+    queries::upsert_file(&conn, "A.swift", "h", 1).unwrap();
+    let alpha = make_node("usr:Alpha", "Alpha", "Alpha", SymbolKind::Struct, "A.swift");
+    queries::upsert_node(&conn, &alpha).unwrap();
+    drop(conn);
+
+    assert!(server_search(&server, "Alpha").contains("usr:Alpha"));
+}

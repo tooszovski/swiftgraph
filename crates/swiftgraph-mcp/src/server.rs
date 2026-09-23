@@ -11,7 +11,7 @@ use serde_json::json;
 
 use crate::tools::{concurrency, navigation, status};
 
-/// LRU cache for MCP tool responses, keyed by (tool_name, params_hash).
+/// LRU cache for MCP tool responses, keyed by (DB generation, tool, params).
 type ResponseCache = Arc<Mutex<LruCache<String, String>>>;
 
 // --- Parameter types for MCP tools ---
@@ -194,8 +194,9 @@ pub struct ConcurrencyToolParams {
 
 /// SwiftGraph MCP server holding project state, DB path, and response cache.
 ///
-/// Created once per project and serves all 22 MCP tools. Uses an LRU cache
-/// for hot-path queries (search) that is invalidated on reindex.
+/// Created once per project and serves all MCP tools. Uses an LRU cache for
+/// hot-path queries (search) keyed by the database generation, so writes by
+/// any process (reindex, `swiftgraph index`, `watch`) invalidate it.
 #[derive(Clone)]
 pub struct SwiftGraphServer {
     /// Root directory of the Swift project.
@@ -204,6 +205,7 @@ pub struct SwiftGraphServer {
     pub db_path: PathBuf,
     tool_router: ToolRouter<Self>,
     cache: ResponseCache,
+    db_watcher: Arc<Mutex<swiftgraph_core::storage::ChangeWatcher>>,
 }
 
 const CACHE_CAPACITY: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(256) {
@@ -217,25 +219,38 @@ impl SwiftGraphServer {
         let db_path = project_root.join(".swiftgraph/db.sqlite");
         Self {
             project_root,
-            db_path,
             tool_router: Self::tool_router(),
             cache: Arc::new(Mutex::new(LruCache::new(CACHE_CAPACITY))),
+            db_watcher: Arc::new(Mutex::new(swiftgraph_core::storage::ChangeWatcher::new(
+                &db_path,
+            ))),
+            db_path,
         }
     }
 
-    /// Get a cached response or compute and cache it.
-    fn cached(&self, key: &str, f: impl FnOnce() -> String) -> String {
-        let key = key.to_string();
+    /// Get a cached response or compute it. `Ok` results are cached under the
+    /// current database generation; errors are returned but never cached, and
+    /// nothing is cached while the database is missing or unreadable.
+    fn cached(&self, key: &str, f: impl FnOnce() -> Result<String, String>) -> String {
+        let generation = self.db_watcher.lock().ok().and_then(|mut w| w.generation());
+        let Some(generation) = generation else {
+            return f().unwrap_or_else(|e| e);
+        };
+        let key = format!("{generation}:{key}");
         if let Ok(mut cache) = self.cache.lock() {
             if let Some(cached) = cache.get(&key) {
                 return cached.clone();
             }
         }
-        let result = f();
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.put(key, result.clone());
+        match f() {
+            Ok(result) => {
+                if let Ok(mut cache) = self.cache.lock() {
+                    cache.put(key, result.clone());
+                }
+                result
+            }
+            Err(error) => error,
         }
-        result
     }
 
     /// Execute a tool handler body within a tracing span that includes a unique request ID.
@@ -322,10 +337,9 @@ impl SwiftGraphServer {
                     kind: params.kind,
                     limit: params.limit,
                 };
-                match navigation::search(&db_path, nav_params) {
-                    Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
-                    Err(e) => json!({"error": e.to_string()}).to_string(),
-                }
+                navigation::search(&db_path, nav_params)
+                    .map(|resp| serde_json::to_string_pretty(&resp).unwrap_or_default())
+                    .map_err(|e| json!({"error": e.to_string()}).to_string())
             })
         })
     }

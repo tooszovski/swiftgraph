@@ -134,8 +134,16 @@ pub fn analyze_diff_impact(
         changed_symbols,
         total_direct_impact: total_direct,
         total_transitive_impact,
-        affected_files: all_affected_files.into_iter().collect(),
-        affected_tests: all_affected_tests.into_iter().collect(),
+        affected_files: {
+            let mut v: Vec<String> = all_affected_files.into_iter().collect();
+            v.sort();
+            v
+        },
+        affected_tests: {
+            let mut v: Vec<String> = all_affected_tests.into_iter().collect();
+            v.sort();
+            v
+        },
         risk_level,
     })
 }

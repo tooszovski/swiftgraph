@@ -68,7 +68,7 @@ pub struct Violation {
 pub struct BoundaryResult {
     pub violations: Vec<Violation>,
     pub total_violations: usize,
-    pub layers_found: HashMap<String, usize>,
+    pub layers_found: std::collections::BTreeMap<String, usize>,
 }
 
 /// Check architecture boundaries given a config.
@@ -116,7 +116,8 @@ pub fn check_boundaries(
          FROM edges e \
          JOIN nodes n1 ON e.source = n1.id \
          JOIN nodes n2 ON e.target = n2.id \
-         WHERE n1.file IS NOT NULL AND n2.file IS NOT NULL AND n1.file != n2.file",
+         WHERE n1.file IS NOT NULL AND n2.file IS NOT NULL AND n1.file != n2.file \
+         ORDER BY n1.file, n2.file, e.source, e.target, e.kind, e.line",
     )?;
 
     let mut violations = Vec::new();
@@ -156,7 +157,7 @@ pub fn check_boundaries(
     }
 
     let total = violations.len();
-    let layers_found: HashMap<String, usize> = layer_files
+    let layers_found: std::collections::BTreeMap<String, usize> = layer_files
         .iter()
         .map(|(k, v)| (k.clone(), v.len()))
         .collect();

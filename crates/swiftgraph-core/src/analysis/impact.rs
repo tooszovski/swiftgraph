@@ -143,13 +143,30 @@ pub fn analyze_impact_from_conn(
     }
     .to_owned();
 
+    for list in [
+        &mut breakdown.callers,
+        &mut breakdown.conforming_types,
+        &mut breakdown.subtypes,
+        &mut breakdown.extensions,
+        &mut breakdown.overrides,
+    ] {
+        list.sort();
+        list.dedup();
+    }
+
     Ok(ImpactResult {
         symbol: symbol_id.to_owned(),
         direct_impact,
         transitive_impact,
-        affected_files: all_files.into_iter().collect(),
-        affected_tests: test_files.into_iter().collect(),
+        affected_files: sorted(all_files),
+        affected_tests: sorted(test_files),
         risk_level,
         breakdown,
     })
+}
+
+fn sorted(set: HashSet<String>) -> Vec<String> {
+    let mut v: Vec<String> = set.into_iter().collect();
+    v.sort();
+    v
 }

@@ -156,8 +156,8 @@ pub fn analyze_coupling(
     // Sort by distance from main sequence (worst first)
     modules.sort_by(|a, b| {
         b.distance
-            .partial_cmp(&a.distance)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .total_cmp(&a.distance)
+            .then_with(|| a.module.cmp(&b.module))
     });
 
     Ok(CouplingResult { modules })

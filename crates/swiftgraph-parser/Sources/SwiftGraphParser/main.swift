@@ -18,11 +18,11 @@ func encodeLine<T: Encodable>(_ value: T) -> String {
     return text
 }
 
-func parseLine(_ path: String) -> String {
+func parseLine(_ path: String) -> (line: String, ok: Bool) {
     do {
-        return encodeLine(try parseFile(atPath: path))
+        return (encodeLine(try parseFile(atPath: path)), true)
     } catch {
-        return encodeLine(ParseFailure(file: path, error: "\(error)"))
+        return (encodeLine(ParseFailure(file: path, error: "\(error)")), false)
     }
 }
 
@@ -50,12 +50,12 @@ case "--stdin":
     let files = paths
     let lines = OSAllocatedUnfairLock(initialState: [String](repeating: "", count: files.count))
     DispatchQueue.concurrentPerform(iterations: files.count) { index in
-        let line = parseLine(files[index])
+        let line = parseLine(files[index]).line
         lines.withLock { $0[index] = line }
     }
     for line in lines.withLock({ $0 }) { writeLine(line) }
 default:
-    let line = parseLine(args[1])
-    writeLine(line)
-    if line.contains("\"error\"") && !line.contains("\"declarations\"") { exit(1) }
+    let result = parseLine(args[1])
+    writeLine(result.line)
+    if !result.ok { exit(1) }
 }

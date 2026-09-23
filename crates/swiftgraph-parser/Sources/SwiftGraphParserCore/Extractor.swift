@@ -71,25 +71,15 @@ struct DeclarationExtractor {
     func declarations(for decl: DeclSyntax, isMember: Bool) -> [Declaration] {
         switch decl.as(DeclSyntaxEnum.self) {
         case .classDecl(let n):
-            [make(n, name: n.name.text, kind: "class", attrs: n.attributes, mods: n.modifiers,
-                  signature: "class \(n.name.text)\(inheritance(n.inheritanceClause))",
-                  members: members(n.memberBlock))]
+            [nominalType(n, keyword: "class")]
         case .structDecl(let n):
-            [make(n, name: n.name.text, kind: "struct", attrs: n.attributes, mods: n.modifiers,
-                  signature: "struct \(n.name.text)\(inheritance(n.inheritanceClause))",
-                  members: members(n.memberBlock))]
+            [nominalType(n, keyword: "struct")]
         case .enumDecl(let n):
-            [make(n, name: n.name.text, kind: "enum", attrs: n.attributes, mods: n.modifiers,
-                  signature: "enum \(n.name.text)\(inheritance(n.inheritanceClause))",
-                  members: members(n.memberBlock))]
+            [nominalType(n, keyword: "enum")]
         case .protocolDecl(let n):
-            [make(n, name: n.name.text, kind: "protocol", attrs: n.attributes, mods: n.modifiers,
-                  signature: "protocol \(n.name.text)\(inheritance(n.inheritanceClause))",
-                  members: members(n.memberBlock))]
+            [nominalType(n, keyword: "protocol")]
         case .actorDecl(let n):
-            [make(n, name: n.name.text, kind: "actor", attrs: n.attributes, mods: n.modifiers,
-                  signature: "actor \(n.name.text)\(inheritance(n.inheritanceClause))",
-                  members: members(n.memberBlock))]
+            [nominalType(n, keyword: "actor")]
         case .extensionDecl(let n):
             [make(n, name: n.extendedType.trimmedDescription, kind: "extension", attrs: n.attributes,
                   mods: n.modifiers,
@@ -144,6 +134,14 @@ struct DeclarationExtractor {
         default:
             []
         }
+    }
+
+    /// `class`/`struct`/`enum`/`protocol`/`actor`: named declaration groups
+    /// that differ only by keyword.
+    private func nominalType<T: DeclGroupSyntax & NamedDeclSyntax>(_ n: T, keyword: String) -> Declaration {
+        make(n, name: n.name.text, kind: keyword, attrs: n.attributes, mods: n.modifiers,
+             signature: "\(keyword) \(n.name.text)\(inheritance(n.inheritanceClause))",
+             members: members(n.memberBlock))
     }
 
     private func make(

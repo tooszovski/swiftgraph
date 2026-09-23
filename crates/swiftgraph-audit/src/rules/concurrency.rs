@@ -96,12 +96,30 @@ impl AuditRule for MissingMainActor {
             }
             let has_async = ASYNC_MARKERS.iter().any(|m| text.contains(m));
             let hops = MAIN_HOP_MARKERS.iter().any(|m| text.contains(m));
+            // Does code that may run off the main actor touch stored state?
+            let state = stored_vars(decl, ctx.source, true);
+            let mut scopes = vec![decl];
+            scopes.extend(class_decls.iter().copied().filter(|ext| {
+                class_keyword(*ext, ctx.source) == "extension"
+                    && crate::rules::decl_type_name(*ext, ctx.source).as_deref() == Some(&name)
+            }));
+            let touches_state = scopes.iter().any(|scope| {
+                unstructured_tasks(*scope, ctx.source)
+                    .into_iter()
+                    .chain(nonisolated_async_bodies(*scope, ctx.source))
+                    .any(|body| state.iter().any(|var| contains_word(body, var)))
+            });
             let (severity, note) = if !has_async {
                 (Severity::Advisory, " (no asynchronous code in the class)")
             } else if hops {
                 (
                     Severity::Advisory,
                     " (the class hops to the main actor explicitly)",
+                )
+            } else if !touches_state {
+                (
+                    Severity::Advisory,
+                    " (asynchronous code does not touch its stored state)",
                 )
             } else {
                 (self.severity(), "")
@@ -326,8 +344,9 @@ fn inherits_from(node: Node, source: &str, types: &[&str]) -> bool {
 pub struct SendableViolation;
 
 /// Names of stored `var` properties declared directly in a class body
-/// (not computed, lazy or weak).
-fn stored_vars<'a>(decl: Node<'a>, source: &'a str) -> Vec<&'a str> {
+/// (not computed, lazy or weak). Property-wrapped ones (`@Injected`,
+/// `@Published`) are included only with `include_wrapped`.
+fn stored_vars<'a>(decl: Node<'a>, source: &'a str, include_wrapped: bool) -> Vec<&'a str> {
     let Some(body) = decl.child_by_field_name("body") else {
         return Vec::new();
     };
@@ -346,7 +365,13 @@ fn stored_vars<'a>(decl: Node<'a>, source: &'a str) -> Vec<&'a str> {
             c.kind() == "value_binding_pattern" && node_text(*c, source).starts_with("var")
         });
         let computed = children.iter().any(|c| c.kind() == "computed_property");
-        if !is_var || computed || text.contains("lazy ") || text.contains("weak ") {
+        let wrapped = text.trim_start().starts_with('@');
+        if !is_var
+            || computed
+            || text.contains("lazy ")
+            || text.contains("weak ")
+            || (wrapped && !include_wrapped)
+        {
             continue;
         }
         if let Some(name) = children
@@ -361,7 +386,9 @@ fn stored_vars<'a>(decl: Node<'a>, source: &'a str) -> Vec<&'a str> {
 }
 
 /// Bodies of `Task { }` / `Task.detached { }` calls under `scope`, excluding
-/// closures that start with `@MainActor`.
+/// closures that start with `@MainActor`, tasks created in `@MainActor`
+/// methods (they inherit the isolation) and bodies that hop to the main
+/// actor themselves (`MainActor.run`, `...OnMain`).
 fn unstructured_tasks<'a>(scope: Node<'a>, source: &'a str) -> Vec<&'a str> {
     find_descendants(scope, source, &|n, src| {
         if n.kind() != "call_expression" {
@@ -378,13 +405,38 @@ fn unstructured_tasks<'a>(scope: Node<'a>, source: &'a str) -> Vec<&'a str> {
             .into_iter()
             .next()?;
         let text = node_text(body, source);
-        (!text
+        let main_closure = text
             .trim_start_matches('{')
             .trim_start()
-            .starts_with("@MainActor"))
-        .then_some(text)
+            .starts_with("@MainActor");
+        let hops = text.contains("MainActor.run") || text.contains("OnMain");
+        let mut in_main_method = false;
+        let mut up = call.parent();
+        while let Some(n) = up {
+            if n.kind() == "function_declaration" {
+                in_main_method = has_attribute(n, source, "MainActor");
+                break;
+            }
+            up = n.parent();
+        }
+        (!main_closure && !hops && !in_main_method).then_some(text)
     })
     .collect()
+}
+
+/// Bodies of `async` methods that are not `@MainActor`.
+fn nonisolated_async_bodies<'a>(scope: Node<'a>, source: &'a str) -> Vec<&'a str> {
+    find_descendants(scope, source, &|n, _| n.kind() == "function_declaration")
+        .into_iter()
+        .filter(|f| !has_attribute(*f, source, "MainActor"))
+        .filter_map(|f| {
+            let body = f.child_by_field_name("body")?;
+            let signature = &source[f.start_byte()..body.start_byte()];
+            signature
+                .contains(" async")
+                .then(|| node_text(body, source))
+        })
+        .collect()
 }
 
 /// Whether `word` occurs in `text` as a whole identifier.
@@ -445,7 +497,7 @@ impl AuditRule for SendableViolation {
             let name = decl_name(decl, ctx.source).unwrap_or_default();
 
             // Stored mutable properties declared in the class body
-            let stored = stored_vars(decl, ctx.source);
+            let stored = stored_vars(decl, ctx.source, false);
             if stored.is_empty() {
                 continue;
             }

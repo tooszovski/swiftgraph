@@ -403,8 +403,31 @@ impl AuditRule for AtsBypass {
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
         let mut issues = Vec::new();
 
+        // Links for the user to open (explorers, faucets) are not network
+        // loads and not subject to ATS.
+        let link_ranges: Vec<(usize, usize)> =
+            find_descendants(ctx.tree.root_node(), ctx.source, &|n, _| {
+                n.kind() == "class_declaration"
+            })
+            .into_iter()
+            .filter(|decl| {
+                crate::rules::decl_type_name(*decl, ctx.source)
+                    .into_iter()
+                    .chain(crate::rules::inheritance_names(*decl, ctx.source))
+                    .any(|name| name.ends_with("LinkProvider"))
+            })
+            .map(|decl| (decl.start_position().row, decl.end_position().row))
+            .collect();
+
         // Check for http:// URLs (non-https)
         for (i, line) in ctx.source.lines().enumerate() {
+            let lower = line.to_ascii_lowercase();
+            if link_ranges.iter().any(|(a, b)| (*a..=*b).contains(&i))
+                || lower.contains("faucet")
+                || lower.contains("explorer")
+            {
+                continue;
+            }
             let trimmed = line.trim();
             if trimmed.starts_with("//") {
                 continue;

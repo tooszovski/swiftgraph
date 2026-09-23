@@ -298,7 +298,9 @@ impl AuditRule for NonLazyList {
         Category::SwiftuiPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: precision 0/15 outside and 1/15 inside ScrollView on a
+        // sampled 7300-file app (lists are short in practice).
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -338,17 +340,15 @@ impl AuditRule for NonLazyList {
             if !in_lazy {
                 let text = node_text(call, ctx.source);
                 // Only flag if ForEach iterates over something that could be large
-                if text.contains("ForEach(") && !small_literal_collection(call, ctx.source) {
+                if text.contains("ForEach(")
+                    && !small_literal_collection(call, ctx.source)
+                    && !crate::rules::in_preview(call, ctx.source)
+                {
                     let scrolling = in_scroll_view(call, ctx.source);
                     issues.push(AuditIssue {
                         id: format!("{}:{}", self.id(), ctx.file_path),
                         category: self.category(),
-                        severity: if scrolling {
-                            self.severity()
-                        } else {
-                            // 0/15 true positives outside a ScrollView on a sampled app
-                            Severity::Advisory
-                        },
+                        severity: self.severity(),
                         rule: self.id().to_string(),
                         message: if scrolling {
                             "ForEach in non-lazy container inside ScrollView — all items rendered at once".into()

@@ -122,7 +122,20 @@ fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
                 .find(|c| c.kind() == "value_argument_label")
             {
                 if escaping_word(node_text(label, source)) {
-                    return Some(Escape::Callback);
+                    // `handle = api.open(onSuccess: { self... })`: self keeps
+                    // the object that keeps the closure
+                    let stored_result = parent
+                        .parent()
+                        .and_then(|args| args.parent())
+                        .and_then(|suffix| suffix.parent())
+                        .map(chain_root)
+                        .and_then(|root| root.parent())
+                        .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
+                    return Some(if stored_result {
+                        Escape::Stored
+                    } else {
+                        Escape::Callback
+                    });
                 }
             }
             parent.parent().and_then(|args| args.parent())
@@ -138,6 +151,10 @@ fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
     let name = crate::rules::callee_name(call, source).unwrap_or_default();
     let root = chain_root(call);
     let chain = node_text(root, source);
+    // `.withWeakCaptureOf(self).sink { (self, value) in }`: `self` is a parameter
+    if chain.contains("withWeakCaptureOf") || chain.contains("weakify") {
+        return None;
+    }
     if COMBINE_MARKERS.iter().any(|m| chain.contains(m)) {
         // Only a subscription kept by `self` closes the cycle; a pipeline
         // returned to the caller is owned there.

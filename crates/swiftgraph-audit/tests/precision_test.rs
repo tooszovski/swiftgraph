@@ -140,3 +140,155 @@ guard let tx = try? JSONDecoder().decode(Tx.self, from: source) else { items = [
     let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
     assert_eq!(lines, vec![14]);
 }
+
+// Second round: patterns left after the first fix.
+
+#[test]
+fn conc001_is_high_only_when_tasks_touch_state() {
+    let rule = rules::concurrency::MissingMainActor;
+    let source = r#"
+final class RoutingViewModel: ObservableObject {
+    @Published var route: Route?
+    // Loads asynchronously
+    func open() { Task { await coordinator.open() } }
+}
+final class LoadingViewModel: ObservableObject {
+    @Published var isLoading = false
+    func load() { Task { isLoading = await service.load() } }
+}
+"#;
+    assert_eq!(
+        found(&check(&rule, source)),
+        vec![(2, Severity::Advisory), (7, Severity::High)]
+    );
+}
+
+#[test]
+fn conc005_ignores_wrappers_hops_and_main_actor_methods() {
+    let rule = rules::concurrency::SendableViolation;
+    let source = r#"
+final class Injected {
+    @Injected(\.service) var service: Service
+    func run() { Task { await service.load() } }
+}
+final class Hopping {
+    var title = ""
+    func run() { Task { let t = await load(); await MainActor.run { title = t } } }
+}
+final class MainMethod {
+    var title = ""
+    @MainActor func run() { Task { title = await load() } }
+}
+final class Caching {
+    var task: Task<Void, Never>?
+    func run() { task = Task { defer { task = nil }; await work() } }
+}
+"#;
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![14]);
+}
+
+#[test]
+fn mem001_weak_capture_helpers_and_stored_call_results() {
+    let rule = rules::memory::ClosureRetainCycle;
+    let source = r#"
+final class Coordinator {
+    var bag = Set<AnyCancellable>()
+    var handle: Handle?
+    func bind() {
+        publisher.withWeakCaptureOf(self).sink { (self, value) in self.apply(value) }.store(in: &bag)
+        handle = safari.openURL(url, onSuccess: { _ in self.resume() })
+    }
+}
+"#;
+    assert_eq!(found(&check(&rule, source)), vec![(7, Severity::High)]);
+}
+
+#[test]
+fn cod002_optional_results_and_fallback_decodes_are_intended() {
+    let rule = rules::codable::TryOptionalDecoding;
+    let source = r#"
+func cached(_ data: Data) -> Item? {
+    return try? JSONDecoder().decode(Item.self, from: data)
+}
+func parse(_ c: SingleValueDecodingContainer) throws -> Value {
+    if let number = try? c.decode(Int.self) { return .number(number) }
+    return .string(try c.decode(String.self))
+}
+func details(_ d: Data) {
+    guard let tx = try? JSONDecoder().decode(Tx.self, from: d) else { items = []; return }
+}
+"#;
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![10]);
+}
+
+#[test]
+fn sec004_skips_links_opened_by_the_user() {
+    let rule = rules::security::AtsBypass;
+    let source = "extension DashExternalLinkProvider: ExternalLinkProvider {\n    var testnetFaucetURL: URL? { URL(string: \"http://faucet.test.dash.io/\") }\n}\nlet config = BlockBookConfig(restNode: \"http://bsc-blockbook.io\")\n";
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![4]);
+}
+
+#[test]
+fn a11y_second_round_patterns() {
+    let label = rules::accessibility::MissingAccessibilityLabel;
+    let src = r#"
+struct Avatar: View {
+    var body: some View {
+        if let image { Image(uiImage: image) } else { Placeholder() }
+    }
+}
+"#;
+    assert!(check(&label, src).is_empty(), "{:?}", check(&label, src));
+
+    let font = rules::accessibility::FixedFontSize;
+    let src = r#"
+struct Close: View {
+    var body: some View {
+        Image(systemName: "xmark").font(.system(size: 17))
+        Text("Title").font(.system(size: 17))
+    }
+}
+"#;
+    assert_eq!(
+        check(&font, src).iter().map(|i| i.line).collect::<Vec<_>>(),
+        vec![5]
+    );
+
+    let target = rules::accessibility::SmallTouchTarget;
+    let src = r#"
+struct Bar: View {
+    var body: some View {
+        Button { a() } label: { Image("a").frame(width: 20, height: 20) }
+            .allowsHitTesting(false)
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button { b() } label: { Image("b").frame(width: 24, height: 24) }
+        }
+        Image("c").frame(width: 10, height: 10).frame(width: 30, height: 30).onTapGesture { c() }
+    }
+}
+"#;
+    let lines: Vec<(u32, Option<u32>)> = check(&target, src)
+        .iter()
+        .map(|i| (i.line, i.column))
+        .collect();
+    assert_eq!(lines, vec![(9, Some(49))]);
+}
+
+#[test]
+fn sui005_is_advisory_and_skips_previews() {
+    let rule = rules::swiftui_perf::NonLazyList;
+    let src = r#"
+struct V: View {
+    var body: some View {
+        ScrollView { VStack { ForEach(model.items) { Text($0.title) } } }
+    }
+}
+#Preview {
+    ScrollView { VStack { ForEach(items) { Text($0) } } }
+}
+"#;
+    assert_eq!(found(&check(&rule, src)), vec![(4, Severity::Advisory)]);
+}

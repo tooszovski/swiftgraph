@@ -85,7 +85,8 @@ struct Row: View {
 "#;
     assert_eq!(
         at(&check(&rule, source)),
-        vec![(8, Some(22)), (13, Some(23)), (13, Some(47))]
+        // Line 8 sizes an SF Symbol, not text.
+        vec![(13, Some(23)), (13, Some(47))]
     );
 }
 

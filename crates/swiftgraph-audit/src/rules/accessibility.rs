@@ -63,10 +63,14 @@ impl AuditRule for MissingAccessibilityLabel {
                         .any(|m| m.starts_with("accessibility"))
                 });
             // The only content of an `if` branch: state shown by the icon alone
+            // (with an `else` it is a fallback, like a placeholder image)
             let state_icon = alone
-                && statements
-                    .parent()
-                    .is_some_and(|p| p.kind() == "if_statement");
+                && statements.parent().is_some_and(|p| {
+                    p.kind() == "if_statement"
+                        && !(0..p.child_count())
+                            .filter_map(|i| p.child(i))
+                            .any(|c| c.kind() == "else")
+                });
             if !(interactive || icon_only_control || state_icon) {
                 continue;
             }
@@ -151,12 +155,28 @@ impl AuditRule for FixedFontSize {
             if scaled.contains(&size) {
                 continue;
             }
+            // Sizing an SF Symbol image, not text
+            if modifier_target_root(m.call, ctx.source) == Some("Image") {
+                continue;
+            }
             found.push(m);
         }
         for name in ["systemFont", "boldSystemFont", "monospacedSystemFont"] {
             for m in modifier_calls(root, ctx.source, name) {
-                let statement = node_text(m.call, ctx.source);
-                if !statement.contains("scaledFont") {
+                // Scaled right away: `UIFontMetrics(...).scaledFont(for: font)`
+                let mut scope = m.call;
+                while let Some(p) = scope.parent() {
+                    scope = p;
+                    if matches!(
+                        p.kind(),
+                        "function_body" | "computed_property" | "statements"
+                    ) && p.parent().is_some_and(|g| g.kind() != "lambda_literal")
+                    {
+                        break;
+                    }
+                }
+                let statement = node_text(scope, ctx.source);
+                if !statement.contains("scaledFont") && !statement.contains("UIFontMetrics") {
                     found.push(m);
                 }
             }
@@ -344,7 +364,13 @@ impl AuditRule for SmallTouchTarget {
             }
             // Modifiers applied after the frame, and the view's placement
             let (after, outer) = modifier_chain(m.call, ctx.source);
-            if after.iter().any(enlarges) {
+            // Only the outermost frame of a chain counts; hit testing off
+            // means it is not a target at all
+            if after.iter().any(enlarges)
+                || after.contains(&"frame")
+                || after.contains(&"allowsHitTesting")
+                || in_toolbar(m.call, ctx.source)
+            {
                 continue;
             }
             let tappable = after
@@ -356,7 +382,9 @@ impl AuditRule for SmallTouchTarget {
                 .and_then(|statements| label_owner(statements, ctx.source))
                 .is_some_and(|control| {
                     let (control_mods, _) = modifier_chain(control, ctx.source);
-                    !control_mods.iter().any(|m| enlarges(m) || *m == "frame")
+                    !control_mods
+                        .iter()
+                        .any(|m| enlarges(m) || *m == "frame" || *m == "allowsHitTesting")
                 });
             if !(tappable || control_label) {
                 continue;
@@ -392,4 +420,40 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(ColorOnlyInfo),
         Box::new(SmallTouchTarget),
     ]
+}
+
+/// Callee name of the view a modifier chain starts from
+/// (`Image(...).font(...)` → `Image`).
+fn modifier_target_root<'a>(call: tree_sitter::Node<'a>, source: &'a str) -> Option<&'a str> {
+    let mut target = call
+        .named_child(0)
+        .and_then(|nav| nav.child_by_field_name("target"));
+    while let Some(t) = target.filter(|t| {
+        t.kind() == "call_expression"
+            && t.named_child(0)
+                .is_some_and(|c| c.kind() == "navigation_expression")
+    }) {
+        target = t
+            .named_child(0)
+            .and_then(|nav| nav.child_by_field_name("target"));
+    }
+    target.and_then(|t| crate::rules::callee_name(t, source))
+}
+
+/// Whether the node is inside a `ToolbarItem`, where the system sizes the
+/// hit area.
+fn in_toolbar(node: tree_sitter::Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "call_expression"
+            && matches!(
+                crate::rules::callee_name(n, source),
+                Some("ToolbarItem" | "ToolbarItemGroup")
+            )
+        {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
 }

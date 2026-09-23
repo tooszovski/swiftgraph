@@ -65,10 +65,19 @@ fn handles_failure(expr: tree_sitter::Node, source: &str) -> bool {
     while let Some(n) = current {
         match n.kind() {
             "if_statement" => {
-                return (0..n.child_count())
+                let has_else = (0..n.child_count())
                     .filter_map(|i| n.child(i))
                     .any(|c| c.kind() == "else");
+                // `if let x = try? c.decode(A.self) { ... }` followed by a
+                // throwing decode of another type: a probe, not a swallow
+                let fallback = n.next_named_sibling().is_some_and(|next| {
+                    let text = node_text(next, source);
+                    text.contains(".decode(") && text.contains("try ")
+                });
+                return has_else || fallback;
             }
+            // `return try? ...`: an optional result by design
+            "control_transfer_statement" => return true,
             "guard_statement" => {
                 let text = node_text(n, source);
                 let otherwise = text.split_once("else").map_or("", |(_, e)| e);

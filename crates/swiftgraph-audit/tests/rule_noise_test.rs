@@ -51,7 +51,7 @@ fn audit_config_disables_rules_and_overrides_severity() {
     std::fs::create_dir_all(dir.path().join(".swiftgraph")).unwrap();
     std::fs::write(
         dir.path().join("VM.swift"),
-        "final class VM: ObservableObject {\n    func load() async {}\n}\nclass Holder: NSObject {\n    var delegate: HolderDelegate?\n}\n",
+        "final class VM: ObservableObject {\n    @Published var items: [Int] = []\n    func load() async { items = await fetch() }\n}\nclass Holder: NSObject {\n    var delegate: HolderDelegate?\n}\n",
     )
     .unwrap();
     let run = || {
@@ -272,7 +272,10 @@ struct V: View {
 "#;
     let issues = check(&rule, source);
     let found: Vec<(u32, Severity)> = issues.iter().map(|i| (i.line, i.severity)).collect();
-    assert_eq!(found, vec![(7, Severity::Advisory), (11, Severity::Medium)]);
+    assert_eq!(
+        found,
+        vec![(7, Severity::Advisory), (11, Severity::Advisory)]
+    );
 }
 
 #[test]

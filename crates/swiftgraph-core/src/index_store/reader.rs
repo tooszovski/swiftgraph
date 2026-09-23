@@ -41,6 +41,10 @@ pub struct IndexStoreData {
     pub units_read: usize,
     /// Number of records read.
     pub records_read: usize,
+    /// Accessor USR → USR of its property (accessors are folded).
+    aliases: HashMap<String, String>,
+    /// Child USR → parent USR (`childOf` relations).
+    containers: HashMap<String, String>,
 }
 
 /// Open an Index Store and read all Swift units/records into graph data.
@@ -61,6 +65,8 @@ pub fn read_index_store(
             Err(e) => trace!("Skipping unit {unit_name}: {e}"),
         }
     }
+
+    finalize(&mut data);
 
     debug!(
         "IndexStore read complete: {} nodes, {} edges from {} units, {} records",
@@ -124,6 +130,30 @@ fn read_record(
     Ok(())
 }
 
+/// Name prefixes of Swift accessor symbols (`getter:value`, `setter:value`...).
+const ACCESSOR_PREFIXES: &[&str] = &[
+    "getter:",
+    "setter:",
+    "_modify:",
+    "_read:",
+    "modify:",
+    "read:",
+    "willSet:",
+    "didSet:",
+    "init:",
+    "unsafeAddress:",
+    "unsafeMutableAddress:",
+];
+
+fn is_accessor(occ: &Occurrence) -> bool {
+    occ.relations
+        .iter()
+        .any(|r| r.roles & symbol_role::REL_ACCESSOROF != 0)
+        || ACCESSOR_PREFIXES
+            .iter()
+            .any(|p| occ.symbol.name.starts_with(p))
+}
+
 fn process_occurrence(
     occ: &Occurrence,
     file_path: &str,
@@ -134,17 +164,28 @@ fn process_occurrence(
     if usr.is_empty() || occ.symbol.language != SymbolLanguage::Swift as u32 {
         return;
     }
+    let declares = occ.roles & (symbol_role::DEFINITION | symbol_role::DECLARATION) != 0;
 
-    // Definitions/declarations become nodes
-    if occ.roles & (symbol_role::DEFINITION | symbol_role::DECLARATION) != 0
-        && !seen.contains_key(usr)
-    {
+    // Accessors are part of their property: no node, relations are
+    // attributed to the property.
+    if is_accessor(occ) {
+        if let Some(property) = occ
+            .relations
+            .iter()
+            .find(|r| r.roles & symbol_role::REL_ACCESSOROF != 0)
+        {
+            data.aliases
+                .insert(usr.clone(), property.symbol.usr.clone());
+        }
+    } else if declares && !seen.contains_key(usr) {
+        // Definitions/declarations become nodes
         let node = GraphNode {
             id: usr.clone(),
             name: occ.symbol.name.clone(),
             qualified_name: occ.symbol.name.clone(),
             kind: map_symbol_kind(occ.symbol.kind),
-            sub_kind: None,
+            sub_kind: (occ.symbol.kind == SymbolKind::Constructor as u32)
+                .then_some(crate::graph::SymbolSubKind::Initializer),
             location: Location {
                 file: file_path.to_owned(),
                 line: occ.line,
@@ -176,6 +217,8 @@ fn process_occurrence(
         end_line: None,
         end_column: None,
     });
+    let implicit = occ.roles & symbol_role::IMPLICIT != 0;
+    let mut called = false;
     for rel in &occ.relations {
         let rel_usr = &rel.symbol.usr;
         if rel_usr.is_empty() {
@@ -187,12 +230,13 @@ fn process_occurrence(
                 target: target.to_owned(),
                 kind,
                 location: location.clone(),
-                is_implicit: false,
+                is_implicit: implicit,
                 ambiguous: false,
             });
         };
         if rel.roles & symbol_role::REL_CALLEDBY != 0 {
             push(rel_usr, usr, EdgeKind::Calls);
+            called = true;
         }
         if rel.roles & symbol_role::REL_BASEOF != 0 {
             // "S baseOf R": the occurrence symbol S is the base, R the subtype.
@@ -204,14 +248,101 @@ fn process_occurrence(
             push(rel_usr, usr, kind);
         }
         if rel.roles & symbol_role::REL_OVERRIDEOF != 0 {
+            // Also protocol witnesses: the implementation "overrides" the requirement
             push(usr, rel_usr, EdgeKind::Overrides);
         }
-        if rel.roles & symbol_role::REL_CHILDOF != 0 {
-            push(usr, rel_usr, EdgeKind::Contains);
+        if rel.roles & symbol_role::REL_CHILDOF != 0 && declares {
+            // "S childOf P": P contains S
+            push(rel_usr, usr, EdgeKind::Contains);
+            data.containers
+                .entry(usr.clone())
+                .or_insert_with(|| rel_usr.clone());
         }
         if rel.roles & symbol_role::REL_EXTENDEDBY != 0 {
             push(rel_usr, usr, EdgeKind::ExtendsType);
         }
+    }
+
+    // Uses that are not calls: type annotations, property reads/writes,
+    // enum cases, initializer references
+    if !declares && !called && occ.roles & symbol_role::REFERENCE != 0 {
+        if let Some(container) = occ
+            .relations
+            .iter()
+            .find(|r| r.roles & symbol_role::REL_CONTAINEDBY != 0)
+        {
+            data.edges.push(GraphEdge {
+                source: container.symbol.usr.clone(),
+                target: usr.clone(),
+                kind: EdgeKind::References,
+                location,
+                is_implicit: implicit,
+                ambiguous: false,
+            });
+        }
+    }
+}
+
+/// Fold accessors into properties, set containers and qualified names,
+/// drop duplicate and self edges.
+fn finalize(data: &mut IndexStoreData) {
+    let alias = |usr: &str| -> String {
+        data.aliases
+            .get(usr)
+            .cloned()
+            .unwrap_or_else(|| usr.to_owned())
+    };
+    let mut seen = std::collections::HashSet::new();
+    let edges = std::mem::take(&mut data.edges);
+    for mut edge in edges {
+        edge.source = alias(&edge.source);
+        edge.target = alias(&edge.target);
+        if edge.source == edge.target && edge.kind != EdgeKind::Overrides {
+            continue;
+        }
+        let key = (
+            edge.source.clone(),
+            edge.target.clone(),
+            edge.kind,
+            edge.location.as_ref().map(|l| (l.line, l.column)),
+        );
+        if seen.insert(key) {
+            data.edges.push(edge);
+        }
+    }
+
+    let names: HashMap<String, String> = data
+        .nodes
+        .iter()
+        .map(|n| (n.id.clone(), n.name.clone()))
+        .collect();
+    let containers = &data.containers;
+    let qualified = |usr: &str| -> String {
+        let mut parts = vec![names.get(usr).cloned().unwrap_or_default()];
+        let mut current = usr;
+        let mut depth = 0;
+        while let Some(parent) = containers.get(current) {
+            depth += 1;
+            if depth > 16 {
+                break;
+            }
+            match names.get(parent) {
+                Some(name) => parts.push(name.clone()),
+                None => break,
+            }
+            current = parent;
+        }
+        parts.reverse();
+        parts.join(".")
+    };
+    let updates: Vec<(Option<String>, String)> = data
+        .nodes
+        .iter()
+        .map(|n| (containers.get(&n.id).cloned(), qualified(&n.id)))
+        .collect();
+    for (node, (container, qualified)) in data.nodes.iter_mut().zip(updates) {
+        node.container_usr = container;
+        node.qualified_name = qualified;
     }
 }
 

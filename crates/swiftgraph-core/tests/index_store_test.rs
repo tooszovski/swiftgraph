@@ -174,3 +174,75 @@ fn conformance_edges_point_from_type_to_protocol() {
         .iter()
         .any(|e| e.kind == EdgeKind::InheritsFrom && e.source == proto_usr));
 }
+
+fn store_data() -> Option<swiftgraph_core::index_store::reader::IndexStoreData> {
+    use swiftgraph_core::index_store::{ffi::IndexStoreLib, reader};
+    let root = common::built_spm_fixture()?;
+    let lib = IndexStoreLib::load().ok()?;
+    let store = swiftgraph_core::project::detect_project(&root)
+        .ok()?
+        .index_store_path?;
+    reader::read_index_store(&lib, &store).ok()
+}
+
+#[test]
+fn accessors_fold_into_their_property() {
+    let Some(data) = store_data() else { return };
+    assert!(
+        !data.nodes.iter().any(|n| n.name.contains(':')
+            && ["getter:", "setter:", "_modify:", "_read:", "willSet:", "didSet:"]
+                .iter()
+                .any(|p| n.name.starts_with(p))),
+        "accessor nodes: {:?}",
+        data.nodes
+            .iter()
+            .filter(|n| n.name.contains("etter:"))
+            .map(|n| &n.name)
+            .collect::<Vec<_>>()
+    );
+    let value = data.nodes.iter().find(|n| n.name == "value").unwrap();
+    // `counter.value = 1` writes through the setter: the reference lands on the property
+    assert!(data
+        .edges
+        .iter()
+        .any(|e| e.target == value.id && e.source.contains("makeCounter")));
+    // The getter reads `storage`: attributed to the property
+    let storage = data.nodes.iter().find(|n| n.name == "storage").unwrap();
+    assert!(data
+        .edges
+        .iter()
+        .any(|e| e.source == value.id && e.target == storage.id));
+}
+
+#[test]
+fn members_are_contained_by_their_type() {
+    use swiftgraph_core::graph::EdgeKind;
+    let Some(data) = store_data() else { return };
+    let store = data.nodes.iter().find(|n| n.name == "MemoryStore").unwrap();
+    let load = data
+        .nodes
+        .iter()
+        .find(|n| n.name == "load(id:)" && n.location.file.ends_with("Store.swift"))
+        .unwrap();
+    assert!(data
+        .edges
+        .iter()
+        .any(|e| e.kind == EdgeKind::Contains && e.source == store.id && e.target == load.id));
+    assert_eq!(load.container_usr.as_deref(), Some(store.id.as_str()));
+    assert!(
+        load.qualified_name.contains("MemoryStore"),
+        "{}",
+        load.qualified_name
+    );
+}
+
+#[test]
+fn type_references_become_edges() {
+    use swiftgraph_core::graph::EdgeKind;
+    let Some(data) = store_data() else { return };
+    let tag = data.nodes.iter().find(|n| n.name == "Tag").unwrap();
+    assert!(data
+        .edges
+        .iter()
+        .any(|e| e.target == tag.id && e.kind == EdgeKind::References));
+}

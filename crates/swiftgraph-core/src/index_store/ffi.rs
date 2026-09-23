@@ -7,10 +7,14 @@
 //! without Xcode installed (graceful degradation to tree-sitter).
 //!
 //! # Safety
-//! All functions in this module are unsafe C FFI wrappers. The `IndexStoreLib`
-//! struct provides a safe(r) loading interface.
+//! This is the only module allowed to contain `unsafe`. Raw handles are wrapped
+//! in [`IndexStore`], [`UnitReader`] and [`RecordReader`], which dispose them on
+//! `Drop`; iteration callbacks copy everything into owned values
+//! ([`UnitDependency`], [`Occurrence`]) so no borrowed C data escapes.
 
+use std::borrow::Cow;
 use std::ffi::{c_char, c_int, c_uint, c_void, CStr, CString};
+use std::marker::PhantomData;
 use std::path::Path;
 
 use thiserror::Error;
@@ -36,24 +40,28 @@ pub struct IndexStoreStringRef {
 }
 
 impl IndexStoreStringRef {
-    /// Convert to a Rust `&str`. Returns empty string if null.
+    /// Borrow as text, replacing invalid UTF-8 (paths from the store are not
+    /// guaranteed to be UTF-8). Returns an empty string if null.
     ///
     /// # Safety
-    /// The pointer must be valid for the lifetime of the returned `&str`.
-    pub unsafe fn as_str(&self) -> &str {
+    /// `data` must point to `length` readable bytes that stay valid for the
+    /// lifetime of the returned value.
+    pub unsafe fn as_str_lossy(&self) -> Cow<'_, str> {
         if self.data.is_null() || self.length == 0 {
-            return "";
+            return Cow::Borrowed("");
         }
-        let bytes = std::slice::from_raw_parts(self.data as *const u8, self.length);
-        std::str::from_utf8_unchecked(bytes)
+        // SAFETY: the caller guarantees `data` is valid for `length` bytes.
+        let bytes = unsafe { std::slice::from_raw_parts(self.data as *const u8, self.length) };
+        String::from_utf8_lossy(bytes)
     }
 
-    /// Convert to owned String.
+    /// Copy into an owned `String` (lossy on invalid UTF-8).
     ///
     /// # Safety
-    /// The pointer must be valid.
+    /// Same as [`Self::as_str_lossy`].
     pub unsafe fn to_string_owned(&self) -> String {
-        self.as_str().to_owned()
+        // SAFETY: forwarded caller guarantee.
+        unsafe { self.as_str_lossy() }.into_owned()
     }
 }
 
@@ -335,7 +343,7 @@ const RTLD_LAZY: c_int = 0x1;
 
 /// Load a symbol from a dylib handle, returning an error if not found.
 unsafe fn load_sym<T>(handle: *mut c_void, name: &str) -> Result<T, FfiError> {
-    let c_name = CString::new(name).unwrap();
+    let c_name = CString::new(name).map_err(|_| FfiError::SymbolNotFound(name.to_owned()))?;
     let ptr = dlsym(handle, c_name.as_ptr());
     if ptr.is_null() {
         return Err(FfiError::SymbolNotFound(name.to_owned()));
@@ -363,6 +371,7 @@ impl IndexStoreLib {
         // SAFETY: dlopen with a valid C string path.
         let handle = unsafe { dlopen(path_str.as_ptr(), RTLD_LAZY) };
         if handle.is_null() {
+            // SAFETY: dlerror returns null or a valid NUL-terminated string.
             let err = unsafe {
                 let e = dlerror();
                 if e.is_null() {
@@ -516,5 +525,338 @@ impl Drop for IndexStoreLib {
         unsafe {
             dlclose(self._lib);
         }
+    }
+}
+
+// --- Safe RAII wrappers ---
+
+/// Symbol data copied out of the store.
+#[derive(Debug, Clone)]
+pub struct SymbolInfo {
+    /// Unified Symbol Resolution string (stable symbol ID).
+    pub usr: String,
+    /// Symbol name, e.g. `load(id:)`.
+    pub name: String,
+    /// Raw [`SymbolKind`] value.
+    pub kind: u32,
+    /// Raw [`SymbolSubKind`] value.
+    pub sub_kind: u32,
+    /// Raw [`SymbolLanguage`] value.
+    pub language: u32,
+    /// [`symbol_property`] bitfield.
+    pub properties: u64,
+}
+
+/// A relation attached to an occurrence (`calledBy`, `baseOf`, `childOf`, ...).
+#[derive(Debug, Clone)]
+pub struct Relation {
+    /// [`symbol_role`] relation bits.
+    pub roles: u64,
+    /// The related symbol.
+    pub symbol: SymbolInfo,
+}
+
+/// One symbol occurrence in a record, fully owned.
+#[derive(Debug, Clone)]
+pub struct Occurrence {
+    /// The symbol that occurs.
+    pub symbol: SymbolInfo,
+    /// [`symbol_role`] bitfield of this occurrence.
+    pub roles: u64,
+    /// 1-based line.
+    pub line: u32,
+    /// 1-based column.
+    pub column: u32,
+    /// Relations of this occurrence.
+    pub relations: Vec<Relation>,
+}
+
+/// A dependency of a unit (another unit, a record, or a file).
+#[derive(Debug, Clone)]
+pub struct UnitDependency {
+    /// Raw [`UnitDependencyKind`] value.
+    pub kind: u32,
+    /// Record or unit name.
+    pub name: String,
+    /// Source file path the dependency belongs to.
+    pub file_path: String,
+    /// Whether the dependency is a system (SDK) one.
+    pub is_system: bool,
+}
+
+/// Owned handle to an opened Index Store; disposed on drop.
+pub struct IndexStore<'l> {
+    lib: &'l IndexStoreLib,
+    raw: IndexStoreT,
+}
+
+/// Owned unit reader; disposed on drop. Cannot outlive its [`IndexStore`].
+pub struct UnitReader<'s> {
+    lib: &'s IndexStoreLib,
+    raw: IndexStoreUnitReaderT,
+    _store: PhantomData<&'s IndexStore<'s>>,
+}
+
+/// Owned record reader; disposed on drop. Cannot outlive its [`IndexStore`].
+pub struct RecordReader<'s> {
+    lib: &'s IndexStoreLib,
+    raw: IndexStoreRecordReaderT,
+    _store: PhantomData<&'s IndexStore<'s>>,
+}
+
+/// Calls `f` for each item passed to a C applier callback. `f` returns
+/// `false` to stop iteration.
+unsafe extern "C" fn trampoline<T, F: FnMut(T) -> bool>(ctx: *mut c_void, item: T) -> bool {
+    // SAFETY: `ctx` is the `&mut F` passed by the `*_apply_f` caller below and
+    // is valid for the duration of that synchronous call.
+    let f = unsafe { &mut *(ctx as *mut F) };
+    f(item)
+}
+
+/// The C callback for closure `f` (infers the unnameable closure type).
+fn trampoline_for<T, F: FnMut(T) -> bool>(_f: &F) -> unsafe extern "C" fn(*mut c_void, T) -> bool {
+    trampoline::<T, F>
+}
+
+fn c_string(s: &str) -> Result<CString, FfiError> {
+    CString::new(s).map_err(|_| FfiError::StoreError(format!("interior NUL in {s:?}")))
+}
+
+impl IndexStoreLib {
+    /// Copy a symbol's data. `symbol` must come from a live occurrence/relation.
+    fn symbol_info(&self, symbol: IndexStoreSymbolT) -> SymbolInfo {
+        // SAFETY: `symbol` is valid for the duration of the enclosing applier
+        // callback; strings are copied before returning.
+        unsafe {
+            SymbolInfo {
+                usr: (self.symbol_get_usr)(symbol).to_string_owned(),
+                name: (self.symbol_get_name)(symbol).to_string_owned(),
+                kind: (self.symbol_get_kind)(symbol),
+                sub_kind: (self.symbol_get_sub_kind)(symbol),
+                language: (self.symbol_get_language)(symbol),
+                properties: (self.symbol_get_properties)(symbol),
+            }
+        }
+    }
+}
+
+impl<'l> IndexStore<'l> {
+    /// Open the Index Store at `path`.
+    pub fn open(lib: &'l IndexStoreLib, path: &Path) -> Result<Self, FfiError> {
+        let path_c = c_string(&path.to_string_lossy())?;
+        let mut error: IndexStoreErrorT = std::ptr::null_mut();
+        // SAFETY: valid C string and out-pointer; ownership of the result is
+        // taken by `Self` and released in `Drop`.
+        let raw = unsafe { (lib.store_create)(path_c.as_ptr(), &mut error) };
+        if raw.is_null() {
+            // SAFETY: `error` was set by the failed call (or is null).
+            return Err(FfiError::StoreError(unsafe {
+                lib.get_error_message(error)
+            }));
+        }
+        Ok(Self { lib, raw })
+    }
+
+    /// Names of all units in the store.
+    pub fn unit_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        let mut f = |name: IndexStoreStringRef| {
+            // SAFETY: `name` is valid during the callback; copied immediately.
+            names.push(unsafe { name.to_string_owned() });
+            true
+        };
+        // SAFETY: `self.raw` is a live store; `f` outlives the synchronous call.
+        unsafe {
+            (self.lib.store_units_apply_f)(
+                self.raw,
+                0,
+                &mut f as *mut _ as *mut c_void,
+                trampoline_for::<IndexStoreStringRef, _>(&f),
+            );
+        }
+        names
+    }
+
+    /// Open a reader for the unit named `name`.
+    pub fn unit_reader(&self, name: &str) -> Result<UnitReader<'_>, FfiError> {
+        let name_c = c_string(name)?;
+        let mut error: IndexStoreErrorT = std::ptr::null_mut();
+        // SAFETY: live store, valid C string; result owned by `UnitReader`.
+        let raw = unsafe { (self.lib.unit_reader_create)(self.raw, name_c.as_ptr(), &mut error) };
+        if raw.is_null() {
+            // SAFETY: `error` was set by the failed call (or is null).
+            return Err(FfiError::StoreError(unsafe {
+                self.lib.get_error_message(error)
+            }));
+        }
+        Ok(UnitReader {
+            lib: self.lib,
+            raw,
+            _store: PhantomData,
+        })
+    }
+
+    /// Open a reader for the record named `name`.
+    pub fn record_reader(&self, name: &str) -> Result<RecordReader<'_>, FfiError> {
+        let name_c = c_string(name)?;
+        let mut error: IndexStoreErrorT = std::ptr::null_mut();
+        // SAFETY: live store, valid C string; result owned by `RecordReader`.
+        let raw = unsafe { (self.lib.record_reader_create)(self.raw, name_c.as_ptr(), &mut error) };
+        if raw.is_null() {
+            // SAFETY: `error` was set by the failed call (or is null).
+            return Err(FfiError::StoreError(unsafe {
+                self.lib.get_error_message(error)
+            }));
+        }
+        Ok(RecordReader {
+            lib: self.lib,
+            raw,
+            _store: PhantomData,
+        })
+    }
+}
+
+impl Drop for IndexStore<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from `store_create` and is disposed exactly once.
+        unsafe { (self.lib.store_dispose)(self.raw) }
+    }
+}
+
+impl UnitReader<'_> {
+    /// Whether this is a system (SDK) unit.
+    pub fn is_system_unit(&self) -> bool {
+        // SAFETY: `raw` is a live unit reader.
+        unsafe { (self.lib.unit_reader_is_system_unit)(self.raw) }
+    }
+
+    /// Main source file of the unit.
+    pub fn main_file(&self) -> String {
+        // SAFETY: live reader; string copied while the reader is alive.
+        unsafe { (self.lib.unit_reader_get_main_file)(self.raw).to_string_owned() }
+    }
+
+    /// Module the unit belongs to.
+    pub fn module_name(&self) -> String {
+        // SAFETY: live reader; string copied while the reader is alive.
+        unsafe { (self.lib.unit_reader_get_module_name)(self.raw).to_string_owned() }
+    }
+
+    /// All dependencies of the unit.
+    pub fn dependencies(&self) -> Vec<UnitDependency> {
+        let lib = self.lib;
+        let mut deps = Vec::new();
+        let mut f = |dep: IndexStoreUnitDependencyT| {
+            // SAFETY: `dep` is valid during the callback; data copied immediately.
+            unsafe {
+                deps.push(UnitDependency {
+                    kind: (lib.unit_dependency_get_kind)(dep),
+                    name: (lib.unit_dependency_get_name)(dep).to_string_owned(),
+                    file_path: (lib.unit_dependency_get_filepath)(dep).to_string_owned(),
+                    is_system: (lib.unit_dependency_is_system)(dep),
+                });
+            }
+            true
+        };
+        // SAFETY: live reader; `f` outlives the synchronous call.
+        unsafe {
+            (self.lib.unit_reader_dependencies_apply_f)(
+                self.raw,
+                &mut f as *mut _ as *mut c_void,
+                trampoline_for::<IndexStoreUnitDependencyT, _>(&f),
+            );
+        }
+        deps
+    }
+}
+
+impl Drop for UnitReader<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from `unit_reader_create` and is disposed exactly once.
+        unsafe { (self.lib.unit_reader_dispose)(self.raw) }
+    }
+}
+
+impl RecordReader<'_> {
+    /// All occurrences in the record, with their relations.
+    pub fn occurrences(&self) -> Vec<Occurrence> {
+        let lib = self.lib;
+        let mut out = Vec::new();
+        let mut f = |occ: IndexStoreOccurrenceT| {
+            let mut relations = Vec::new();
+            let mut on_relation = |rel: IndexStoreSymbolRelationT| {
+                // SAFETY: `rel` is valid during the callback; data copied immediately.
+                let (roles, symbol) = unsafe {
+                    (
+                        (lib.symbol_relation_get_roles)(rel),
+                        (lib.symbol_relation_get_symbol)(rel),
+                    )
+                };
+                relations.push(Relation {
+                    roles,
+                    symbol: lib.symbol_info(symbol),
+                });
+                true
+            };
+            let mut line: c_uint = 0;
+            let mut column: c_uint = 0;
+            // SAFETY: `occ` is valid during the callback; nested apply is
+            // synchronous and `on_relation` outlives it.
+            let (symbol, roles) = unsafe {
+                (lib.occurrence_get_line_col)(occ, &mut line, &mut column);
+                (lib.occurrence_relations_apply_f)(
+                    occ,
+                    &mut on_relation as *mut _ as *mut c_void,
+                    trampoline_for::<IndexStoreSymbolRelationT, _>(&on_relation),
+                );
+                (
+                    (lib.occurrence_get_symbol)(occ),
+                    (lib.occurrence_get_roles)(occ),
+                )
+            };
+            out.push(Occurrence {
+                symbol: lib.symbol_info(symbol),
+                roles,
+                line,
+                column,
+                relations,
+            });
+            true
+        };
+        // SAFETY: live reader; `f` outlives the synchronous call.
+        unsafe {
+            (self.lib.record_reader_occurrences_apply_f)(
+                self.raw,
+                &mut f as *mut _ as *mut c_void,
+                trampoline_for::<IndexStoreOccurrenceT, _>(&f),
+            );
+        }
+        out
+    }
+}
+
+impl Drop for RecordReader<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `raw` came from `record_reader_create` and is disposed exactly once.
+        unsafe { (self.lib.record_reader_dispose)(self.raw) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_utf8_string_ref_is_replaced_not_trusted() {
+        let bytes: &[u8] = b"Sources/\xff\xfeName.swift";
+        let sr = IndexStoreStringRef {
+            data: bytes.as_ptr() as *const c_char,
+            length: bytes.len(),
+        };
+        // SAFETY: `bytes` outlives the call and `length` matches the slice.
+        let s = unsafe { sr.to_string_owned() };
+        assert!(std::str::from_utf8(s.as_bytes()).is_ok());
+        assert!(s.contains('\u{FFFD}'));
+        assert!(s.starts_with("Sources/") && s.ends_with("Name.swift"));
     }
 }

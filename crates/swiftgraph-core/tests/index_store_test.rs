@@ -107,3 +107,37 @@ fn pathdiff(target: &std::path::Path, base: &std::path::Path) -> std::path::Path
     }
     out
 }
+
+#[test]
+fn reader_extracts_symbols_from_real_store() {
+    use swiftgraph_core::index_store::{ffi::IndexStoreLib, reader};
+    let root = fixture_or_skip!();
+    let Ok(lib) = IndexStoreLib::load() else {
+        eprintln!("skipped: libIndexStore unavailable");
+        return;
+    };
+    let store = swiftgraph_core::project::detect_project(&root)
+        .unwrap()
+        .index_store_path
+        .unwrap();
+    let data = reader::read_index_store(&lib, &store).unwrap();
+    assert!(data.units_read > 0);
+    for name in [
+        "User",
+        "UserStore",
+        "MemoryStore",
+        "Screen",
+        "greeting(name:)",
+    ] {
+        assert!(
+            data.nodes
+                .iter()
+                .any(|n| n.name == name && n.id.starts_with("s:")),
+            "missing {name}"
+        );
+    }
+    assert!(data
+        .edges
+        .iter()
+        .any(|e| e.kind == swiftgraph_core::graph::EdgeKind::Calls));
+}

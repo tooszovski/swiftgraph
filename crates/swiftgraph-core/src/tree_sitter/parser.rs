@@ -317,8 +317,14 @@ fn extract_signature(node: &Node, source: &str) -> Option<String> {
     let text = &source[start..];
     let first_line = text.lines().next()?;
     let trimmed = first_line.trim();
-    if trimmed.len() > 200 {
-        Some(format!("{}...", &trimmed[..200]))
+    const MAX_SIGNATURE_BYTES: usize = 200;
+    if trimmed.len() > MAX_SIGNATURE_BYTES {
+        // Cut on a char boundary: slicing mid-codepoint panics on non-ASCII text.
+        let cut = (0..=MAX_SIGNATURE_BYTES)
+            .rev()
+            .find(|&i| trimmed.is_char_boundary(i))
+            .unwrap_or(0);
+        Some(format!("{}...", &trimmed[..cut]))
     } else {
         Some(trimmed.to_string())
     }
@@ -459,6 +465,26 @@ fn make_synthetic_id(file: &str, name: &str, line: usize) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn long_non_ascii_signature_does_not_panic() {
+        // Cyrillic chars are 2 bytes; one of the two paddings puts byte 200 mid-char.
+        for pad in ["", "a"] {
+            let mut parser = TreeSitterParser::new().unwrap();
+            let source = format!("func x{pad}({}: Int) {{}}\n", "я".repeat(150));
+            assert!(source.len() > 220);
+            let result = parser
+                .parse_source(&source, &PathBuf::from("test.swift"))
+                .unwrap();
+            let sig = result
+                .nodes
+                .iter()
+                .find(|n| n.name == format!("x{pad}"))
+                .and_then(|n| n.signature.clone())
+                .unwrap();
+            assert!(sig.ends_with("..."));
+        }
+    }
 
     #[test]
     fn parse_simple_struct() {

@@ -206,7 +206,10 @@ pub struct SwiftGraphServer {
     cache: ResponseCache,
 }
 
-const CACHE_CAPACITY: usize = 256;
+const CACHE_CAPACITY: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(256) {
+    Some(n) => n,
+    None => std::num::NonZeroUsize::MIN,
+};
 
 impl SwiftGraphServer {
     /// Create a new server for the given project root.
@@ -216,9 +219,7 @@ impl SwiftGraphServer {
             project_root,
             db_path,
             tool_router: Self::tool_router(),
-            cache: Arc::new(Mutex::new(LruCache::new(
-                std::num::NonZeroUsize::new(CACHE_CAPACITY).unwrap(),
-            ))),
+            cache: Arc::new(Mutex::new(LruCache::new(CACHE_CAPACITY))),
         }
     }
 

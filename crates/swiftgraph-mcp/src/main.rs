@@ -375,9 +375,9 @@ async fn main() -> Result<()> {
         Command::Boundaries { config } => {
             let root = get_project_root(None);
             let db_path = root.join(".swiftgraph/db.sqlite");
-            let config_str = std::fs::read_to_string(&config).unwrap_or_else(|e| {
-                panic!("Failed to read boundary config {}: {e}", config.display())
-            });
+            let config_str = std::fs::read_to_string(&config).map_err(|e| {
+                anyhow::anyhow!("failed to read boundary config {}: {e}", config.display())
+            })?;
             let result = tools::navigation::get_boundaries(&db_path, &config_str)?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
@@ -408,7 +408,8 @@ async fn main() -> Result<()> {
 }
 
 fn get_project_root(path: Option<PathBuf>) -> PathBuf {
-    path.unwrap_or_else(|| std::env::current_dir().expect("could not get current directory"))
+    path.or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 fn cmd_init(root: &Path) -> Result<()> {

@@ -199,9 +199,9 @@ enum Command {
         /// Output format: json, text
         #[arg(long, default_value = "text")]
         format: String,
-        /// Max issues
-        #[arg(long, default_value = "100")]
-        max_issues: usize,
+        /// Max issues (default: all for json/sarif, 200 for text)
+        #[arg(long)]
+        max_issues: Option<usize>,
     },
 }
 
@@ -414,6 +414,8 @@ async fn main() -> Result<()> {
             } else {
                 min_severity
             };
+            // JSON and SARIF feed tools: everything unless capped explicitly
+            let max_issues = max_issues.unwrap_or(if format == "text" { 200 } else { usize::MAX });
             let options = tools::navigation::parse_audit_options(
                 categories.as_deref(),
                 Some(min_severity.as_str()),

@@ -34,6 +34,12 @@ pub fn format_text(result: &AuditResult) -> String {
         }
     }
 
+    if result.truncated {
+        out.push_str(&format!(
+            "\n... truncated, {} more (raise --max-issues or use --format json)\n",
+            result.found_issues.saturating_sub(result.total_issues)
+        ));
+    }
     out
 }
 

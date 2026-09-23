@@ -14,20 +14,7 @@ public func parseSource(_ source: String, fileName: String) -> ParseResult {
     let extractor = DeclarationExtractor(
         converter: SourceLocationConverter(fileName: fileName, tree: tree)
     )
-    var imports: [ImportDecl] = []
-    var declarations: [Declaration] = []
-    for item in tree.statements {
-        guard let decl = item.item.as(DeclSyntax.self) else { continue }
-        if let imp = decl.as(ImportDeclSyntax.self) {
-            imports.append(extractor.importDecl(imp))
-        } else if let ifConfig = decl.as(IfConfigDeclSyntax.self) {
-            let (decls, nestedImports) = extractor.topLevel(ifConfig)
-            declarations += decls
-            imports += nestedImports
-        } else {
-            declarations += extractor.declarations(for: decl, isMember: false)
-        }
-    }
+    let (declarations, imports) = extractor.statements(tree.statements)
     return ParseResult(
         version: ParserProtocol.version,
         file: fileName,
@@ -49,23 +36,27 @@ struct DeclarationExtractor {
         )
     }
 
-    /// Declarations and imports inside a top-level `#if` block (all clauses).
-    func topLevel(_ node: IfConfigDeclSyntax) -> ([Declaration], [ImportDecl]) {
-        var decls: [Declaration] = []
+    /// Declarations and imports of a statement list (file level or a `#if`
+    /// clause), descending into every clause of nested `#if` blocks.
+    func statements(_ items: CodeBlockItemListSyntax) -> ([Declaration], [ImportDecl]) {
+        var declarations: [Declaration] = []
         var imports: [ImportDecl] = []
-        for clause in node.clauses {
-            if let items = clause.elements?.as(CodeBlockItemListSyntax.self) {
-                for item in items {
-                    guard let decl = item.item.as(DeclSyntax.self) else { continue }
-                    if let imp = decl.as(ImportDeclSyntax.self) {
-                        imports.append(importDecl(imp))
-                    } else {
-                        decls += declarations(for: decl, isMember: false)
-                    }
+        for item in items {
+            guard let decl = item.item.as(DeclSyntax.self) else { continue }
+            if let imp = decl.as(ImportDeclSyntax.self) {
+                imports.append(importDecl(imp))
+            } else if let ifConfig = decl.as(IfConfigDeclSyntax.self) {
+                for clause in ifConfig.clauses {
+                    guard let nested = clause.elements?.as(CodeBlockItemListSyntax.self) else { continue }
+                    let (d, i) = statements(nested)
+                    declarations += d
+                    imports += i
                 }
+            } else {
+                declarations += self.declarations(for: decl, isMember: false)
             }
         }
-        return (decls, imports)
+        return (declarations, imports)
     }
 
     func members(_ block: MemberBlockSyntax) -> [Declaration] {
@@ -78,59 +69,50 @@ struct DeclarationExtractor {
 
     /// One syntax node can yield several declarations (`var a, b`, `case x, y`).
     func declarations(for decl: DeclSyntax, isMember: Bool) -> [Declaration] {
-        if let n = decl.as(ClassDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "class", attrs: n.attributes, mods: n.modifiers,
-                         signature: "class \(n.name.text)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(StructDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "struct", attrs: n.attributes, mods: n.modifiers,
-                         signature: "struct \(n.name.text)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(EnumDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "enum", attrs: n.attributes, mods: n.modifiers,
-                         signature: "enum \(n.name.text)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(ProtocolDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "protocol", attrs: n.attributes, mods: n.modifiers,
-                         signature: "protocol \(n.name.text)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(ActorDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "actor", attrs: n.attributes, mods: n.modifiers,
-                         signature: "actor \(n.name.text)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(ExtensionDeclSyntax.self) {
-            let name = n.extendedType.trimmedDescription
-            return [make(n, name: name, kind: "extension", attrs: n.attributes, mods: n.modifiers,
-                         signature: "extension \(name)\(inheritance(n.inheritanceClause))",
-                         members: members(n.memberBlock))]
-        }
-        if let n = decl.as(FunctionDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: isMember ? "method" : "function",
-                         attrs: n.attributes, mods: n.modifiers,
-                         signature: "func \(n.name.text)\(n.genericParameterClause?.trimmedDescription ?? "")\(n.signature.trimmedDescription)",
-                         members: nil)]
-        }
-        if let n = decl.as(InitializerDeclSyntax.self) {
-            let optional = n.optionalMark?.text ?? ""
-            return [make(n, name: "init", kind: "initializer", attrs: n.attributes, mods: n.modifiers,
-                         signature: "init\(optional)\(n.signature.trimmedDescription)", members: nil)]
-        }
-        if let n = decl.as(DeinitializerDeclSyntax.self) {
-            return [make(n, name: "deinit", kind: "deinitializer", attrs: n.attributes, mods: n.modifiers,
-                         signature: "deinit", members: nil)]
-        }
-        if let n = decl.as(SubscriptDeclSyntax.self) {
-            return [make(n, name: "subscript", kind: "subscript", attrs: n.attributes, mods: n.modifiers,
-                         signature: "subscript\(n.parameterClause.trimmedDescription) \(n.returnClause.trimmedDescription)",
-                         members: nil)]
-        }
-        if let n = decl.as(VariableDeclSyntax.self) {
-            return n.bindings.compactMap { binding -> Declaration? in
+        switch decl.as(DeclSyntaxEnum.self) {
+        case .classDecl(let n):
+            [make(n, name: n.name.text, kind: "class", attrs: n.attributes, mods: n.modifiers,
+                  signature: "class \(n.name.text)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .structDecl(let n):
+            [make(n, name: n.name.text, kind: "struct", attrs: n.attributes, mods: n.modifiers,
+                  signature: "struct \(n.name.text)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .enumDecl(let n):
+            [make(n, name: n.name.text, kind: "enum", attrs: n.attributes, mods: n.modifiers,
+                  signature: "enum \(n.name.text)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .protocolDecl(let n):
+            [make(n, name: n.name.text, kind: "protocol", attrs: n.attributes, mods: n.modifiers,
+                  signature: "protocol \(n.name.text)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .actorDecl(let n):
+            [make(n, name: n.name.text, kind: "actor", attrs: n.attributes, mods: n.modifiers,
+                  signature: "actor \(n.name.text)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .extensionDecl(let n):
+            [make(n, name: n.extendedType.trimmedDescription, kind: "extension", attrs: n.attributes,
+                  mods: n.modifiers,
+                  signature: "extension \(n.extendedType.trimmedDescription)\(inheritance(n.inheritanceClause))",
+                  members: members(n.memberBlock))]
+        case .functionDecl(let n):
+            [make(n, name: n.name.text, kind: isMember ? "method" : "function",
+                  attrs: n.attributes, mods: n.modifiers,
+                  signature: "func \(n.name.text)\(n.genericParameterClause?.trimmedDescription ?? "")\(n.signature.trimmedDescription)",
+                  members: nil)]
+        case .initializerDecl(let n):
+            [make(n, name: "init", kind: "initializer", attrs: n.attributes, mods: n.modifiers,
+                  signature: "init\(n.optionalMark?.text ?? "")\(n.signature.trimmedDescription)",
+                  members: nil)]
+        case .deinitializerDecl(let n):
+            [make(n, name: "deinit", kind: "deinitializer", attrs: n.attributes, mods: n.modifiers,
+                  signature: "deinit", members: nil)]
+        case .subscriptDecl(let n):
+            [make(n, name: "subscript", kind: "subscript", attrs: n.attributes, mods: n.modifiers,
+                  signature: "subscript\(n.parameterClause.trimmedDescription) \(n.returnClause.trimmedDescription)",
+                  members: nil)]
+        case .variableDecl(let n):
+            n.bindings.compactMap { binding in
                 guard let id = binding.pattern.as(IdentifierPatternSyntax.self) else { return nil }
                 let type = binding.typeAnnotation?.trimmedDescription ?? ""
                 return make(n, name: id.identifier.text, kind: "property", attrs: n.attributes,
@@ -138,34 +120,30 @@ struct DeclarationExtractor {
                             signature: "\(n.bindingSpecifier.text) \(id.identifier.text)\(type)",
                             members: nil)
             }
-        }
-        if let n = decl.as(EnumCaseDeclSyntax.self) {
-            return n.elements.map { element in
+        case .enumCaseDecl(let n):
+            n.elements.map { element in
                 make(n, name: element.name.text, kind: "enumCase", attrs: n.attributes, mods: n.modifiers,
                      signature: "case \(element.trimmedDescription)", members: nil)
             }
-        }
-        if let n = decl.as(AssociatedTypeDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "associatedType", attrs: n.attributes,
-                         mods: n.modifiers, signature: "associatedtype \(n.name.text)", members: nil)]
-        }
-        if let n = decl.as(TypeAliasDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "typeAlias", attrs: n.attributes, mods: n.modifiers,
-                         signature: "typealias \(n.name.text) = \(n.initializer.value.trimmedDescription)",
-                         members: nil)]
-        }
-        if let n = decl.as(MacroDeclSyntax.self) {
-            return [make(n, name: n.name.text, kind: "macro", attrs: n.attributes, mods: n.modifiers,
-                         signature: "macro \(n.name.text)\(n.signature.trimmedDescription)", members: nil)]
-        }
-        if let n = decl.as(IfConfigDeclSyntax.self) {
+        case .associatedTypeDecl(let n):
+            [make(n, name: n.name.text, kind: "associatedType", attrs: n.attributes,
+                  mods: n.modifiers, signature: "associatedtype \(n.name.text)", members: nil)]
+        case .typeAliasDecl(let n):
+            [make(n, name: n.name.text, kind: "typeAlias", attrs: n.attributes, mods: n.modifiers,
+                  signature: "typealias \(n.name.text) = \(n.initializer.value.trimmedDescription)",
+                  members: nil)]
+        case .macroDecl(let n):
+            [make(n, name: n.name.text, kind: "macro", attrs: n.attributes, mods: n.modifiers,
+                  signature: "macro \(n.name.text)\(n.signature.trimmedDescription)", members: nil)]
+        case .ifConfigDecl(let n):
             // Members inside #if/#else: report all clauses.
-            return n.clauses.flatMap { clause -> [Declaration] in
+            n.clauses.flatMap { clause -> [Declaration] in
                 guard let list = clause.elements?.as(MemberBlockItemListSyntax.self) else { return [] }
                 return members(list)
             }
+        default:
+            []
         }
-        return []
     }
 
     private func make(
@@ -216,13 +194,10 @@ struct DeclarationExtractor {
     }
 
     private func docComment(_ trivia: Trivia) -> String? {
-        var lines: [String] = []
-        for piece in trivia {
+        let lines = trivia.compactMap { piece -> String? in
             switch piece {
-            case .docLineComment(let text), .docBlockComment(let text):
-                lines.append(text)
-            default:
-                break
+            case .docLineComment(let text), .docBlockComment(let text): text
+            default: nil
             }
         }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")

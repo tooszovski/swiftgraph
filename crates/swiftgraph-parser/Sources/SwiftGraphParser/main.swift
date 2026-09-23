@@ -6,29 +6,8 @@
 ///   swiftgraph-parser <file.swift>   Print one JSON line for the file
 
 import Foundation
+import os
 import SwiftGraphParserCore
-
-/// Collects encoded lines from concurrent workers.
-final class Lines: @unchecked Sendable {
-    private var storage: [String]
-    private let lock = NSLock()
-
-    init(count: Int) {
-        storage = Array(repeating: "", count: count)
-    }
-
-    func set(_ index: Int, _ value: String) {
-        lock.lock()
-        storage[index] = value
-        lock.unlock()
-    }
-
-    var all: [String] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage
-    }
-}
 
 func encodeLine<T: Encodable>(_ value: T) -> String {
     let encoder = JSONEncoder()
@@ -66,12 +45,15 @@ case "--stdin":
         let path = line.trimmingCharacters(in: .whitespaces)
         if !path.isEmpty { paths.append(path) }
     }
+    // Parsing is synchronous CPU work, so a parallel-for is the right tool;
+    // results go into a Sendable lock-protected buffer, kept in input order.
     let files = paths
-    let lines = Lines(count: files.count)
+    let lines = OSAllocatedUnfairLock(initialState: [String](repeating: "", count: files.count))
     DispatchQueue.concurrentPerform(iterations: files.count) { index in
-        lines.set(index, parseLine(files[index]))
+        let line = parseLine(files[index])
+        lines.withLock { $0[index] = line }
     }
-    for line in lines.all { writeLine(line) }
+    for line in lines.withLock({ $0 }) { writeLine(line) }
 default:
     let line = parseLine(args[1])
     writeLine(line)

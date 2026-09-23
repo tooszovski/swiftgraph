@@ -89,14 +89,14 @@ fn cycles_ignore_ambiguous_edges() {
 #[test]
 fn complexity_ignores_ambiguous_edges() {
     let conn = graph();
-    let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "score").unwrap();
+    let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "score", true).unwrap();
     let get = |id: &str| result.symbols.iter().find(|s| s.id == id).unwrap();
     assert_eq!((get("a").fan_in, get("a").fan_out), (0, 0));
     assert_eq!((get("d").fan_in, get("c").fan_out), (1, 1));
     assert_eq!(result.total_symbols, 6);
     assert!(!result.truncated);
 
-    let top1 = complexity::analyze_complexity_from_conn(&conn, None, 1, "score").unwrap();
+    let top1 = complexity::analyze_complexity_from_conn(&conn, None, 1, "score", true).unwrap();
     assert_eq!(top1.symbols.len(), 1);
     assert_eq!(top1.total_symbols, 6);
     assert!(top1.truncated);

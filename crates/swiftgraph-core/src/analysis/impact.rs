@@ -135,7 +135,7 @@ pub fn analyze_impact_from_conn(
     for id in &all_affected {
         if let Ok(Some(node)) = queries::get_node(conn, id) {
             let file = &node.location.file;
-            if file.contains("/Tests/") || file.contains("Tests.swift") {
+            if super::is_test_or_manifest(file) {
                 test_files.insert(file.clone());
             } else {
                 all_files.insert(file.clone());

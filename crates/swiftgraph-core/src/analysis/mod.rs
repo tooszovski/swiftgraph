@@ -18,3 +18,22 @@ pub mod diff_impact;
 pub mod impact;
 /// Module dependency graph from import declarations.
 pub mod imports;
+
+/// Whether `path` belongs to a test target or is a SwiftPM manifest:
+/// a `Package.swift` file, a `*Tests.swift` file, or a directory whose name
+/// ends in `Tests` (also `UITests`) or `TestKit`.
+///
+/// Dead-code and complexity skip these by default: manifests declare a
+/// single unused `package` constant, and test helpers dominate fan-in.
+pub fn is_test_or_manifest(path: &str) -> bool {
+    let mut components = path.split('/').filter(|c| !c.is_empty()).peekable();
+    while let Some(component) = components.next() {
+        if components.peek().is_none() {
+            return component == "Package.swift" || component.ends_with("Tests.swift");
+        }
+        if component.ends_with("Tests") || component.ends_with("TestKit") {
+            return true;
+        }
+    }
+    false
+}

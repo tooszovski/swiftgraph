@@ -433,12 +433,14 @@ pub fn get_complexity(
     path_filter: Option<&str>,
     limit: Option<u32>,
     sort_by: Option<&str>,
+    include_tests: bool,
 ) -> Result<analysis::complexity::ComplexityResult> {
     let result = analysis::complexity::analyze_complexity(
         db_path,
         path_filter,
         limit.unwrap_or(30),
         sort_by.unwrap_or("score"),
+        include_tests,
     )?;
     Ok(result)
 }

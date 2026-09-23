@@ -159,10 +159,10 @@ fn analyses_are_deterministic() {
     });
     assert_stable("impact", || impact::analyze_impact(db, "f0", 4).unwrap());
     assert_stable("complexity", || {
-        complexity::analyze_complexity(db, None, 20, "score").unwrap()
+        complexity::analyze_complexity(db, None, 20, "score", true).unwrap()
     });
     assert_stable("complexity fan_in", || {
-        complexity::analyze_complexity(db, None, 7, "fan_in").unwrap()
+        complexity::analyze_complexity(db, None, 7, "fan_in", true).unwrap()
     });
     assert_stable("cycles", || cycles::detect_cycles(db, None, 5).unwrap());
     assert_stable("dead_code", || {

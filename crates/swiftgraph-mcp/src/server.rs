@@ -124,13 +124,15 @@ pub struct ComplexityToolParams {
     pub limit: Option<u32>,
     /// Sort by: "score", "fan_in", or "fan_out" (default "score")
     pub sort_by: Option<String>,
+    /// Include test targets and Package.swift manifests (default false)
+    pub include_tests: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DeadCodeToolParams {
     /// Filter by file path prefix
     pub path: Option<String>,
-    /// Include test files (default false)
+    /// Include test targets and Package.swift manifests (default false)
     pub include_tests: Option<bool>,
     /// Max results (default 50)
     pub limit: Option<u32>,
@@ -583,6 +585,7 @@ impl SwiftGraphServer {
                 params.path.as_deref(),
                 params.limit,
                 params.sort_by.as_deref(),
+                params.include_tests.unwrap_or(false),
             ) {
                 Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
                 Err(e) => json!({"error": e.to_string()}).to_string(),

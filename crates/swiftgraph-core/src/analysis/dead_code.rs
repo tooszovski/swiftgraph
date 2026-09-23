@@ -111,10 +111,7 @@ pub fn find_dead_code_from_conn(
         }
 
         // Skip test files unless requested
-        if !include_tests
-            && (node.location.file.contains("/Tests/")
-                || node.location.file.contains("Tests.swift"))
-        {
+        if !include_tests && super::is_test_or_manifest(&node.location.file) {
             continue;
         }
 

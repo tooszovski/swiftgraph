@@ -57,14 +57,18 @@ pub struct FileComplexity {
 }
 
 /// Analyze complexity for symbols, optionally filtered by file prefix.
+///
+/// Test targets and `Package.swift` manifests are skipped unless
+/// `include_tests` is set (see [`super::is_test_or_manifest`]).
 pub fn analyze_complexity(
     db_path: &Path,
     path_filter: Option<&str>,
     limit: u32,
     sort_by: &str, // "score", "fan_in", "fan_out"
+    include_tests: bool,
 ) -> Result<ComplexityResult, ComplexityError> {
     let conn = storage::open_db(db_path)?;
-    analyze_complexity_from_conn(&conn, path_filter, limit, sort_by)
+    analyze_complexity_from_conn(&conn, path_filter, limit, sort_by, include_tests)
 }
 
 /// Analyze complexity from an existing connection.
@@ -76,6 +80,7 @@ pub fn analyze_complexity_from_conn(
     path_filter: Option<&str>,
     limit: u32,
     sort_by: &str,
+    include_tests: bool,
 ) -> Result<ComplexityResult, ComplexityError> {
     let pattern = format!("{}%", path_filter.unwrap_or(""));
     let mut stmt = conn.prepare(
@@ -100,7 +105,13 @@ pub fn analyze_complexity_from_conn(
             score: fan_in as f64 * 1.5 + fan_out as f64,
         })
     })?;
-    let mut symbols: Vec<SymbolComplexity> = rows.collect::<Result<_, _>>()?;
+    let mut symbols: Vec<SymbolComplexity> = Vec::new();
+    for row in rows {
+        let symbol = row?;
+        if include_tests || !super::is_test_or_manifest(&symbol.file) {
+            symbols.push(symbol);
+        }
+    }
     let total = symbols.len();
     let mut file_map: HashMap<String, Vec<&SymbolComplexity>> = HashMap::new();
 

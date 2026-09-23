@@ -118,13 +118,16 @@ enum Command {
         /// Sort by: score, fan_in, fan_out
         #[arg(long, default_value = "score")]
         sort_by: String,
+        /// Include test targets and Package.swift manifests
+        #[arg(long)]
+        include_tests: bool,
     },
     /// Find dead code
     DeadCode {
         /// Filter by file path prefix
         #[arg(long)]
         path: Option<String>,
-        /// Include test files
+        /// Include test targets and Package.swift manifests
         #[arg(long)]
         include_tests: bool,
         /// Max results
@@ -316,6 +319,7 @@ async fn main() -> Result<()> {
             path,
             limit,
             sort_by,
+            include_tests,
         } => {
             let root = get_project_root(None);
             let db_path = root.join(".swiftgraph/db.sqlite");
@@ -324,6 +328,7 @@ async fn main() -> Result<()> {
                 path.as_deref(),
                 Some(limit),
                 Some(sort_by.as_str()),
+                include_tests,
             )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }

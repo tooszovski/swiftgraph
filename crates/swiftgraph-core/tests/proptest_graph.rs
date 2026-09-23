@@ -110,7 +110,7 @@ proptest! {
     #[test]
     fn complexity_no_crash_on_arbitrary_graph((n, edges) in arb_graph(20, 40)) {
         let conn = test_helpers::create_random_graph(n, &edges);
-        let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "score");
+        let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "score", true);
         prop_assert!(result.is_ok());
     }
 
@@ -118,7 +118,7 @@ proptest! {
     fn complexity_fan_out_matches_edges(_dummy in 0..1u32) {
         // Node 0 calls nodes 1, 2, 3 — fan_out should be 3
         let conn = test_helpers::create_random_graph(4, &[(0, 1), (0, 2), (0, 3)]);
-        let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "fan_out").unwrap();
+        let result = complexity::analyze_complexity_from_conn(&conn, None, 100, "fan_out", true).unwrap();
         let node0 = result.symbols.iter().find(|s| s.id == "usr:node_0").unwrap();
         prop_assert_eq!(node0.fan_out, 3, "Expected fan_out=3 for node_0");
     }

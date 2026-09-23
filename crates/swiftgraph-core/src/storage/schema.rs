@@ -80,7 +80,6 @@ CREATE INDEX IF NOT EXISTS idx_nodes_container ON nodes(container_usr);
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
-CREATE INDEX IF NOT EXISTS idx_name_refs_name ON name_refs(name);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_category ON diagnostics(category);
 "#;

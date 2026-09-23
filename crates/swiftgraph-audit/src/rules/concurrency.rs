@@ -88,6 +88,7 @@ impl AuditRule for MissingMainActor {
                 ),
                 file: ctx.file_path.to_string(),
                 line: crate::rules::declaration_line(decl, ctx.source),
+                column: None,
                 symbol: Some(name),
                 fix: Some("Add @MainActor to the class declaration".into()),
             });
@@ -144,6 +145,7 @@ impl AuditRule for UnsafeTaskCapture {
                     message: "Task captures `self` strongly — may cause retain cycle".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Use `[weak self]` capture list or restructure to avoid retaining self"
@@ -201,6 +203,7 @@ impl AuditRule for MainActorFromDetached {
                     message: "Task.detached accesses `self` properties — may violate actor isolation".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use `await MainActor.run { }` for MainActor-isolated property access, or use Task { } instead".into()),
                 });
@@ -258,6 +261,7 @@ impl AuditRule for ActorHopInLoop {
                         ),
                         file: ctx.file_path.to_string(),
                         line: loop_node.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Batch work on the target actor to reduce hop overhead".into()),
                     });
@@ -356,6 +360,7 @@ impl AuditRule for SendableViolation {
                     ),
                     file: ctx.file_path.to_string(),
                     line: decl.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some(
                         "Make the class final + Sendable, use @MainActor, or convert to an actor"
@@ -417,6 +422,7 @@ impl AuditRule for StoredTaskWithoutCancel {
                     ),
                     file: ctx.file_path.to_string(),
                     line: prop.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some("Cancel the task in deinit or when no longer needed".into()),
                 });
@@ -473,6 +479,7 @@ impl AuditRule for NonisolatedMutableAccess {
                     ),
                     file: ctx.file_path.to_string(),
                     line: func.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some("Remove nonisolated or avoid accessing actor-isolated state".into()),
                 });

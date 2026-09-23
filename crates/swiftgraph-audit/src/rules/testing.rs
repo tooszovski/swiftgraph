@@ -46,6 +46,7 @@ impl AuditRule for SleepInTest {
                 message: "sleep() in test — causes flakiness and slow test suite".into(),
                 file: ctx.file_path.to_string(),
                 line: sleep.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Use XCTestExpectation, async/await, or Clock.sleep for Swift Testing".into(),
@@ -109,6 +110,7 @@ impl AuditRule for MissingAssertion {
                     message: format!("Test `{name}` has no assertions — test always passes"),
                     file: ctx.file_path.to_string(),
                     line: func.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some("Add XCTAssert/expect/require assertions".into()),
                 });
@@ -171,6 +173,7 @@ impl AuditRule for SharedMutableState {
                         ),
                         file: ctx.file_path.to_string(),
                         line: var.start_position().row as u32 + 1,
+                        column: None,
                         symbol: Some(name),
                         fix: Some("Use instance properties reset in setUp() instead".into()),
                     });
@@ -228,6 +231,7 @@ impl AuditRule for ForceUnwrapInTest {
                 ),
                 file: ctx.file_path.to_string(),
                 line: force_unwraps[0].start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Replace `!` with try XCTUnwrap() or #require()".into()),
             });
@@ -289,6 +293,7 @@ impl AuditRule for MigrationOpportunity {
                     ),
                     file: ctx.file_path.to_string(),
                     line: 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Migrate to Swift Testing: @Test instead of func test*, #expect instead of XCTAssert".into()),
                 });

@@ -96,6 +96,7 @@ impl AuditRule for HardcodedSecrets {
                             message: format!("Possible hardcoded {label} detected"),
                             file: ctx.file_path.to_string(),
                             line: i as u32 + 1,
+                            column: None,
                             symbol: None,
                             fix: Some("Move secrets to Keychain, environment variables, or a secure config file".into()),
                         });
@@ -165,6 +166,7 @@ impl AuditRule for InsecureStorage {
                             ),
                             file: ctx.file_path.to_string(),
                             line: i as u32 + 1,
+                            column: None,
                             symbol: None,
                             fix: Some("Use Keychain Services for sensitive data storage".into()),
                         });
@@ -381,6 +383,7 @@ impl AuditRule for SensitiveLogging {
                     message: format!("Potentially logging sensitive data (`{s}`)"),
                     file: ctx.file_path.to_string(),
                     line: i as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Redact sensitive values in log output or use `.private` privacy level"
@@ -433,6 +436,7 @@ impl AuditRule for AtsBypass {
                     message: "Non-HTTPS URL detected — may require ATS exception".into(),
                     file: ctx.file_path.to_string(),
                     line: i as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Use HTTPS URLs. If HTTP is required, document the ATS exception".into(),
@@ -485,6 +489,7 @@ impl AuditRule for InjectableFormatString {
                 message: "String(format:) with non-literal format argument — potential format string injection".into(),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Use string interpolation instead, or ensure the format string is a compile-time literal".into()),
             });
@@ -542,6 +547,7 @@ impl AuditRule for MissingCertPinning {
                         ),
                         file: ctx.file_path.to_string(),
                         line: decl.start_position().row as u32 + 1,
+                        column: None,
                         symbol: Some(name),
                         fix: Some("Validate the server certificate against known pins using SecTrust".into()),
                     });

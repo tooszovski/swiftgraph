@@ -56,6 +56,7 @@ impl AuditRule for LogicInView {
                         ),
                         file: ctx.file_path.to_string(),
                         line: prop.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Move business logic to a ViewModel or service layer".into()),
                     });
@@ -111,6 +112,7 @@ impl AuditRule for MassiveViewBody {
                     ),
                     file: ctx.file_path.to_string(),
                     line: prop.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Extract logical sections into separate View structs".into()),
                 });
@@ -160,6 +162,7 @@ impl AuditRule for EnvironmentObjectUsage {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Migrate to @Observable class and inject via @Environment".into()),
             });
@@ -221,6 +224,7 @@ impl AuditRule for TooManyStateProperties {
                     ),
                     file: ctx.file_path.to_string(),
                     line: decl.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some("Group related state into an @Observable model".into()),
                 });
@@ -295,6 +299,7 @@ impl AuditRule for PublishedWithoutObservable {
                     ),
                     file: ctx.file_path.to_string(),
                     line: decl.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(name),
                     fix: Some("Add ObservableObject conformance or migrate to @Observable".into()),
                 });

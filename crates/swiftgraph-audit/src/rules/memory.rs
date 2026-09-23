@@ -199,6 +199,7 @@ impl AuditRule for ClosureRetainCycle {
                         .into(),
                     file: ctx.file_path.to_string(),
                     line: closure.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use `[weak self]` capture list".into()),
                 });
@@ -367,6 +368,7 @@ impl AuditRule for StrongDelegate {
                 message: "Delegate/datasource property is not declared as `weak` — potential retain cycle".into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
+                column: None,
                 symbol: Some(name.to_string()),
                 fix: Some("Add `weak` modifier: `weak var delegate: ...`".into()),
             });
@@ -413,6 +415,7 @@ impl AuditRule for TimerLeak {
                         message: "Timer created but no `.invalidate()` found in this file — potential memory leak".into(),
                         file: ctx.file_path.to_string(),
                         line: i as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Invalidate the timer in deinit or when no longer needed".into()),
                     });
@@ -463,6 +466,7 @@ impl AuditRule for ObserverLeak {
                         message: "NotificationCenter observer added but no `removeObserver` found in this file".into(),
                         file: ctx.file_path.to_string(),
                         line: i as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Remove observer in deinit: `NotificationCenter.default.removeObserver(self)`".into()),
                     });
@@ -520,6 +524,7 @@ impl AuditRule for KvoLeak {
                             message: "KVO observation result not stored — will be immediately invalidated".into(),
                             file: ctx.file_path.to_string(),
                             line: call.start_position().row as u32 + 1,
+                            column: None,
                             symbol: None,
                             fix: Some("Store the NSKeyValueObservation token in a property".into()),
                         });
@@ -537,6 +542,7 @@ impl AuditRule for KvoLeak {
                     message: "addObserver() without matching removeObserver() — KVO leak".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Call removeObserver() in deinit or use modern KVO with observation tokens"
@@ -591,6 +597,7 @@ impl AuditRule for PhotoKitAccumulation {
                     message: "PHImageManager request without cancelImageRequest — may accumulate memory in scroll contexts".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Store the PHImageRequestID and cancel previous requests before starting new ones".into()),
                 });

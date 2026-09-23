@@ -42,6 +42,7 @@ impl AuditRule for ManualJsonBuilding {
                 message: "Using JSONSerialization instead of Codable — less type-safe".into(),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Define Codable structs and use JSONEncoder/JSONDecoder".into()),
             });
@@ -89,6 +90,7 @@ impl AuditRule for TryOptionalDecoding {
                 message: "`try?` on decode silently loses decoding errors — data corruption goes unnoticed".into(),
                 file: ctx.file_path.to_string(),
                 line: expr.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Use try/catch and log the DecodingError for debugging".into()),
             });
@@ -155,6 +157,7 @@ impl AuditRule for DateDecodingStrategy {
                             .into(),
                     file: ctx.file_path.to_string(),
                     line: decoder.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Set decoder.dateDecodingStrategy = .iso8601 or appropriate strategy"
@@ -213,6 +216,7 @@ impl AuditRule for ManualCodingKeys {
                     ),
                     file: ctx.file_path.to_string(),
                     line: e.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use keyDecodingStrategy if keys follow a consistent pattern".into()),
                 });
@@ -270,6 +274,7 @@ impl AuditRule for MissingKeyHandling {
                     ),
                     file: ctx.file_path.to_string(),
                     line: init.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use decodeIfPresent for optional fields to handle missing keys gracefully".into()),
                 });

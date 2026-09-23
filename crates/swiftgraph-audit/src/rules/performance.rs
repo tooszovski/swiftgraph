@@ -93,6 +93,7 @@ impl AuditRule for UnnecessaryCopy {
                         ),
                         file: ctx.file_path.to_string(),
                         line: struct_node.start_position().row as u32 + 1,
+                        column: None,
                         symbol: Some(struct_name.to_string()),
                         fix: Some(
                             "Use `borrowing` or `consuming` parameter ownership modifiers for large value types"
@@ -148,6 +149,7 @@ impl AuditRule for ExcessiveArc {
                         message: "`[weak self]` + immediate `guard let self` — ARC overhead for no benefit".into(),
                         file: ctx.file_path.to_string(),
                         line: i as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some(
                             "If self is always needed, capture `[self]` directly (for non-escaping closures) or use `[unowned self]` if lifetime is guaranteed"
@@ -201,6 +203,7 @@ impl AuditRule for ExistentialOverhead {
                     message: "Existential type (`any Protocol`) in collection — 24+ bytes per element with heap allocation".into(),
                     file: ctx.file_path.to_string(),
                     line: i as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Use generics (`some Protocol`) or a concrete wrapper type to avoid existential container overhead"
@@ -263,6 +266,7 @@ impl AuditRule for CollectionNoReserve {
                         message: "`.append()` in loop without `reserveCapacity` — may cause repeated reallocations".into(),
                         file: ctx.file_path.to_string(),
                         line: loop_node.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some(
                             "Call `array.reserveCapacity(expectedCount)` before the loop if count is known or estimable"
@@ -322,6 +326,7 @@ impl AuditRule for ActorHopOverhead {
                         ),
                         file: ctx.file_path.to_string(),
                         line: loop_node.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some(
                             "Batch operations: collect data first, then call the actor once, or move the loop inside the actor"
@@ -407,6 +412,7 @@ impl AuditRule for LargeValueType {
                     message: reason,
                     file: ctx.file_path.to_string(),
                     line: struct_node.start_position().row as u32 + 1,
+                    column: None,
                     symbol: Some(struct_name.to_string()),
                     fix: Some(
                         "Consider: (1) use class instead, (2) use indirect storage with a reference-type backing, or (3) use borrowing/consuming parameters"

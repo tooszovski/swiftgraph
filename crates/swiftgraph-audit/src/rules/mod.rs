@@ -409,3 +409,104 @@ pub fn ios_deployment_target(root: &std::path::Path) -> Option<(u32, u32)> {
     }
     lowest
 }
+
+/// A modifier call `expr.name(...)`: the call and the `name` identifier.
+pub struct ModifierCall<'a> {
+    pub call: Node<'a>,
+    pub name: Node<'a>,
+}
+
+impl ModifierCall<'_> {
+    /// 1-based (line, column) of the modifier name.
+    pub fn position(&self) -> (u32, u32) {
+        let p = self.name.start_position();
+        (p.row as u32 + 1, p.column as u32 + 1)
+    }
+}
+
+/// Every `.name(...)` modifier call under `root`.
+pub fn modifier_calls<'a>(root: Node<'a>, source: &'a str, name: &str) -> Vec<ModifierCall<'a>> {
+    find_descendants(root, source, &|n, _| n.kind() == "call_expression")
+        .into_iter()
+        .filter_map(|call| {
+            let nav = call.named_child(0)?;
+            if nav.kind() != "navigation_expression" {
+                return None;
+            }
+            let suffix = nav.child_by_field_name("suffix")?;
+            let ident = suffix
+                .child_by_field_name("suffix")
+                .or_else(|| suffix.named_child(0))?;
+            (node_text(ident, source) == name).then_some(ModifierCall { call, name: ident })
+        })
+        .collect()
+}
+
+/// Walk up a modifier chain from `expr` (`expr.a().b()`): the names of the
+/// modifiers applied to it, innermost first, and the outermost call.
+pub fn modifier_chain<'a>(expr: Node<'a>, source: &'a str) -> (Vec<&'a str>, Node<'a>) {
+    let mut names = Vec::new();
+    let mut current = expr;
+    while let Some(nav) = current.parent() {
+        if nav.kind() != "navigation_expression"
+            || nav.child_by_field_name("target").map(|t| t.id()) != Some(current.id())
+        {
+            break;
+        }
+        let Some(call) = nav.parent() else { break };
+        if call.kind() != "call_expression" || call.named_child(0).map(|c| c.id()) != Some(nav.id())
+        {
+            break;
+        }
+        if let Some(name) = callee_name(call, source) {
+            names.push(name);
+        }
+        current = call;
+    }
+    (names, current)
+}
+
+/// Whether `node` is preview code: inside `#Preview { }` or a
+/// `PreviewProvider` / `*_Previews` type.
+pub fn in_preview(node: Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        match n.kind() {
+            "class_declaration" => {
+                if decl_name(n, source).is_some_and(|name| name.ends_with("_Previews"))
+                    || inheritance_names(n, source)
+                        .iter()
+                        .any(|i| i == "PreviewProvider")
+                {
+                    return true;
+                }
+            }
+            _ if node_text(n, source).starts_with("#Preview") => return true,
+            _ => {}
+        }
+        current = n.parent();
+    }
+    false
+}
+
+/// The control (`Button`, `NavigationLink`, `Link`, `Menu`, `Toggle`) whose
+/// label closure is `statements`, if any.
+pub fn label_owner<'a>(statements: Node<'a>, source: &'a str) -> Option<Node<'a>> {
+    let lambda = statements
+        .parent()
+        .filter(|l| l.kind() == "lambda_literal")?;
+    let mut up = lambda.parent()?;
+    // `label: { }` → value_argument → value_arguments → call_suffix
+    while matches!(up.kind(), "value_argument" | "value_arguments") {
+        up = up.parent()?;
+    }
+    if up.kind() != "call_suffix" {
+        return None;
+    }
+    let call = up.parent().filter(|c| c.kind() == "call_expression")?;
+    matches!(
+        callee_name(call, source),
+        Some("Button" | "NavigationLink" | "Link" | "Menu" | "Toggle")
+    )
+    .then_some(call)
+}

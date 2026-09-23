@@ -156,13 +156,18 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
             .cmp(&a.severity)
             .then_with(|| a.file.cmp(&b.file))
             .then_with(|| a.line.cmp(&b.line))
+            .then_with(|| a.column.cmp(&b.column))
             .then_with(|| a.rule.cmp(&b.rule))
             .then_with(|| a.message.cmp(&b.message))
     });
     // Nested expressions (a modifier chain) can match a rule several times on
     // one line; report each distinct finding once.
     issues.dedup_by(|a, b| {
-        a.file == b.file && a.line == b.line && a.rule == b.rule && a.message == b.message
+        a.file == b.file
+            && a.line == b.line
+            && a.column == b.column
+            && a.rule == b.rule
+            && a.message == b.message
     });
 
     // Per-category cap: ensure each category gets fair representation

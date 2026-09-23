@@ -57,6 +57,7 @@ impl AuditRule for FrequentTimer {
                     message: "Timer with interval <= 1s — significant battery drain".into(),
                     file: ctx.file_path.to_string(),
                     line: timer.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Increase interval or use CADisplayLink for frame-rate work".into()),
                 });
@@ -116,6 +117,7 @@ impl AuditRule for PollingPattern {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: timer.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Use NotificationCenter, Combine publishers, or server push instead of polling"
@@ -173,6 +175,7 @@ impl AuditRule for ContinuousLocation {
                     message: "Location updates without activityType or desiredAccuracy — GPS stays active unnecessarily".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Set activityType and desiredAccuracy, use significant location changes when possible".into()),
                 });
@@ -227,6 +230,7 @@ impl AuditRule for AnimationLeak {
                             .into(),
                     file: ctx.file_path.to_string(),
                     line: link.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Call invalidate() in deinit or when the view disappears".into()),
                 });
@@ -241,6 +245,7 @@ impl AuditRule for AnimationLeak {
                         .into(),
                     file: ctx.file_path.to_string(),
                     line: link.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use .onDisappear to stop repeating animations".into()),
                 });
@@ -293,6 +298,7 @@ impl AuditRule for UnnecessaryBackgroundMode {
                             .into(),
                     file: ctx.file_path.to_string(),
                     line: task.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Always provide an expirationHandler and call endBackgroundTask".into(),
@@ -345,6 +351,7 @@ impl AuditRule for EagerNetworking {
                     message: "URLSession config without waitsForConnectivity — may wake radio unnecessarily".into(),
                     file: ctx.file_path.to_string(),
                     line: config.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Set waitsForConnectivity = true to defer requests until connected".into()),
                 });
@@ -403,6 +410,7 @@ impl AuditRule for ShortAsyncAfter {
                     message: "Short asyncAfter delay — often masks a timing or layout bug".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Use DispatchQueue.main.async, onAppear, or fix the underlying timing issue"
@@ -456,6 +464,7 @@ impl AuditRule for LocationAccuracy {
                 message: "CLLocationManager without desiredAccuracy — defaults to kCLLocationAccuracyBest (high power)".into(),
                 file: ctx.file_path.to_string(),
                 line: first.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Set desiredAccuracy to kCLLocationAccuracyHundredMeters or lower for background/non-navigation use".into()),
             });

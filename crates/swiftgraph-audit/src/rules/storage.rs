@@ -47,6 +47,7 @@ impl AuditRule for WrongStorageDirectory {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: dir_ref.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Use .cachesDirectory for cache files or NSTemporaryDirectory() for temp files"
@@ -99,6 +100,7 @@ impl AuditRule for MissingBackupExclusion {
                     message: "Files in Application Support without backup exclusion — may bloat iCloud backup".into(),
                     file: ctx.file_path.to_string(),
                     line: write.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Set isExcludedFromBackup = true on regenerable data".into()),
                 });
@@ -159,6 +161,7 @@ impl AuditRule for MissingFileProtection {
                     message: "Sensitive data written to file without file protection — readable when device is locked".into(),
                     file: ctx.file_path.to_string(),
                     line: write.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Use .completeFileProtection or store in Keychain instead".into()),
                 });
@@ -215,6 +218,7 @@ impl AuditRule for LargeUserDefaults {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Use FileManager, SwiftData, or Core Data for large data".into()),
             });

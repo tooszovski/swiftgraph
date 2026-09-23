@@ -48,6 +48,7 @@ impl AuditRule for ObservableObjectMigration {
                 ),
                 file: ctx.file_path.to_string(),
                 line: decl.start_position().row as u32 + 1,
+                column: None,
                 symbol: Some(name),
                 fix: Some(
                     "Replace ObservableObject with @Observable, remove @Published wrappers".into(),
@@ -102,6 +103,7 @@ impl AuditRule for StateObjectMigration {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Use @State with @Observable class instead of @StateObject".into()),
             });
@@ -154,6 +156,7 @@ impl AuditRule for ObservedObjectMigration {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "With @Observable, remove @ObservedObject and use @Bindable for bindings"
@@ -208,6 +211,7 @@ impl AuditRule for DeprecatedOnChange {
                 message: "onChange(of:perform:) is deprecated in iOS 17 — use new onChange(of:) with oldValue/newValue".into(),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Use .onChange(of: value) { oldValue, newValue in ... }".into()),
             });
@@ -255,6 +259,7 @@ impl AuditRule for NavigationViewMigration {
                 message: "NavigationView is deprecated — use NavigationStack (iOS 16+)".into(),
                 file: ctx.file_path.to_string(),
                 line: nav.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Replace NavigationView with NavigationStack for programmatic navigation"

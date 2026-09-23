@@ -66,6 +66,10 @@ pub struct AuditIssue {
     pub message: String,
     pub file: String,
     pub line: u32,
+    /// 1-based column of the element the finding is about, when the rule
+    /// knows it; distinguishes several findings on one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
     pub symbol: Option<String>,
     pub fix: Option<String>,
 }

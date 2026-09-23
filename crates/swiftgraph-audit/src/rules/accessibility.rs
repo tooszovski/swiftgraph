@@ -1,7 +1,10 @@
 //! Accessibility audit rules (A11Y-001 through A11Y-004).
 
 use crate::engine::{AuditIssue, Category, Severity};
-use crate::rules::{find_descendants, node_text, AuditRule, FileContext};
+use crate::rules::{
+    find_descendants, in_preview, label_owner, modifier_calls, modifier_chain, node_text,
+    AuditRule, FileContext,
+};
 
 /// A11Y-001: Image without accessibility label.
 pub struct MissingAccessibilityLabel;
@@ -24,44 +27,69 @@ impl AuditRule for MissingAccessibilityLabel {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find Image() or UIImageView without accessibility
         let images = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "call_expression" {
-                return false;
-            }
-            let text = node_text(node, src);
-            (text.starts_with("Image(") || text.starts_with("Image(systemName:"))
-                && !text.contains("decorative")
+            node.kind() == "call_expression"
+                && node.named_child(0).is_some_and(|c| {
+                    c.kind() == "simple_identifier" && node_text(c, src) == "Image"
+                })
         });
 
         for img in images {
-            // Check if .accessibilityLabel is chained
-            let parent_text = img
-                .parent()
-                .and_then(|p| p.parent())
-                .map(|p| node_text(p, ctx.source))
-                .unwrap_or("");
-
-            if !parent_text.contains("accessibilityLabel")
-                && !parent_text.contains("accessibilityHidden")
-                && !node_text(img, ctx.source).contains("decorative")
-            {
-                issues.push(AuditIssue {
-                    id: format!("{}:{}", self.id(), ctx.file_path),
-                    category: self.category(),
-                    severity: self.severity(),
-                    rule: self.id().to_string(),
-                    message: "Image without accessibilityLabel — invisible to VoiceOver users"
-                        .into(),
-                    file: ctx.file_path.to_string(),
-                    line: img.start_position().row as u32 + 1,
-                    symbol: None,
-                    fix: Some(
-                        "Add .accessibilityLabel() or mark as decorative with Image(decorative:)"
-                            .into(),
-                    ),
-                });
+            let text = node_text(img, ctx.source);
+            if text.contains("decorative") || text.contains(".init()") {
+                continue;
             }
+            if in_preview(img, ctx.source) {
+                continue;
+            }
+            let (modifiers, outer) = modifier_chain(img, ctx.source);
+            if modifiers.iter().any(|m| m.starts_with("accessibility")) {
+                continue;
+            }
+            // Only views placed in a view builder: not values stored in
+            // properties, returned from model code or passed as arguments.
+            let Some(statements) = outer.parent().filter(|p| p.kind() == "statements") else {
+                continue;
+            };
+            let alone = statements.named_child_count() == 1;
+            let interactive = modifiers
+                .iter()
+                .any(|m| matches!(*m, "onTapGesture" | "onLongPressGesture"));
+            let icon_only_control = alone
+                && label_owner(statements, ctx.source).is_some_and(|control| {
+                    !modifier_chain(control, ctx.source)
+                        .0
+                        .iter()
+                        .any(|m| m.starts_with("accessibility"))
+                });
+            // The only content of an `if` branch: state shown by the icon alone
+            let state_icon = alone
+                && statements
+                    .parent()
+                    .is_some_and(|p| p.kind() == "if_statement");
+            if !(interactive || icon_only_control || state_icon) {
+                continue;
+            }
+            let pos = img.start_position();
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: if state_icon {
+                    "Image is the only indicator of state and has no accessibilityLabel".into()
+                } else {
+                    "Image without accessibilityLabel — invisible to VoiceOver users".into()
+                },
+                file: ctx.file_path.to_string(),
+                line: pos.row as u32 + 1,
+                column: Some(pos.column as u32 + 1),
+                symbol: None,
+                fix: Some(
+                    "Add .accessibilityLabel() to the image or its control, or mark it decorative"
+                        .into(),
+                ),
+            });
         }
 
         issues
@@ -89,33 +117,70 @@ impl AuditRule for FixedFontSize {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find .font(.system(size:)) without .relativeTo
-        let font_calls = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "call_expression" {
-                return false;
-            }
-            let text = node_text(node, src);
-            text.contains(".font(.system(size:")
-                || text.contains("UIFont.systemFont(ofSize:")
-                || text.contains("UIFont(name:")
-        });
+        // `@ScaledMetric var size` already scales with Dynamic Type
+        let scaled: Vec<&str> = ctx
+            .source
+            .match_indices("@ScaledMetric")
+            .filter_map(|(i, _)| {
+                let rest = &ctx.source[i..];
+                let var = rest.find("var ")?;
+                let name = rest[var + 4..].trim_start();
+                let end = name
+                    .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .unwrap_or(name.len());
+                Some(&name[..end])
+            })
+            .collect();
 
-        for call in font_calls {
-            let text = node_text(call, ctx.source);
-            if !text.contains("relativeTo") && !text.contains("UIFontMetrics") {
-                issues.push(AuditIssue {
-                    id: format!("{}:{}", self.id(), ctx.file_path),
-                    category: self.category(),
-                    severity: self.severity(),
-                    rule: self.id().to_string(),
-                    message: "Fixed font size — won't scale with Dynamic Type accessibility setting"
-                        .into(),
-                    file: ctx.file_path.to_string(),
-                    line: call.start_position().row as u32 + 1,
-                    symbol: None,
-                    fix: Some("Use .font(.body) or .font(.system(size:, relativeTo:)) for Dynamic Type support".into()),
-                });
+        let mut found = Vec::new();
+        for m in modifier_calls(root, ctx.source, "font") {
+            let args = m
+                .call
+                .named_child(1)
+                .map(|a| node_text(a, ctx.source))
+                .unwrap_or("");
+            let args = args.trim_start_matches('(').trim_start();
+            if !args.starts_with(".system(size:") || args.contains("relativeTo") {
+                continue;
             }
+            let size = args[".system(size:".len()..]
+                .split([',', ')'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if scaled.contains(&size) {
+                continue;
+            }
+            found.push(m);
+        }
+        for name in ["systemFont", "boldSystemFont", "monospacedSystemFont"] {
+            for m in modifier_calls(root, ctx.source, name) {
+                let statement = node_text(m.call, ctx.source);
+                if !statement.contains("scaledFont") {
+                    found.push(m);
+                }
+            }
+        }
+
+        found.sort_by_key(|m| m.position());
+        for m in found {
+            if in_preview(m.call, ctx.source) {
+                continue;
+            }
+            let (line, column) = m.position();
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: "Fixed font size — won't scale with Dynamic Type accessibility setting"
+                    .into(),
+                file: ctx.file_path.to_string(),
+                line,
+                column: Some(column),
+                symbol: None,
+                fix: Some("Use .font(.body) or .font(.system(size:, relativeTo:)) for Dynamic Type support".into()),
+            });
         }
 
         issues
@@ -143,31 +208,89 @@ impl AuditRule for ColorOnlyInfo {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find conditional color changes (status indicators)
-        let conditionals = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "ternary_expression" && node.kind() != "if_statement" {
-                return false;
-            }
-            let text = node_text(node, src);
-            (text.contains(".red") || text.contains(".green") || text.contains("Color("))
-                && text.contains("foregroundColor")
-                && !text.contains("accessibilityLabel")
-                && !text.contains("Text(")
-        });
+        const SHAPES: &[&str] = &[
+            "Circle",
+            "Rectangle",
+            "RoundedRectangle",
+            "Capsule",
+            "Ellipse",
+        ];
+        const COLORING: &[&str] = &[
+            "fill",
+            "foregroundColor",
+            "foregroundStyle",
+            "background",
+            "tint",
+        ];
+        let is_color = |text: &str| {
+            let t = text.trim();
+            t.starts_with("Color")
+                || t.starts_with(".red")
+                || t.starts_with(".green")
+                || t.starts_with(".orange")
+                || t.starts_with(".yellow")
+        };
 
-        for cond in conditionals {
-            issues.push(AuditIssue {
-                id: format!("{}:{}", self.id(), ctx.file_path),
-                category: self.category(),
-                severity: self.severity(),
-                rule: self.id().to_string(),
-                message: "Status conveyed by color alone — inaccessible to color-blind users"
-                    .into(),
-                file: ctx.file_path.to_string(),
-                line: cond.start_position().row as u32 + 1,
-                symbol: None,
-                fix: Some("Add text label, icon, or accessibilityLabel alongside color".into()),
-            });
+        for modifier in COLORING {
+            for m in modifier_calls(root, ctx.source, modifier) {
+                let Some(ternary) =
+                    find_descendants(m.call, ctx.source, &|n, _| n.kind() == "ternary_expression")
+                        .into_iter()
+                        .next()
+                else {
+                    continue;
+                };
+                // `cond ? green : red`: both branches are colors
+                let branches: Vec<&str> = (0..ternary.named_child_count())
+                    .filter_map(|i| ternary.named_child(i))
+                    .skip(1)
+                    .map(|b| node_text(b, ctx.source))
+                    .collect();
+                if branches.len() != 2 || !branches.iter().all(|b| is_color(b)) {
+                    continue;
+                }
+                // Applied to a shape: nothing but the color tells the state
+                let mut target = m
+                    .call
+                    .named_child(0)
+                    .and_then(|nav| nav.child_by_field_name("target"));
+                while let Some(t) = target.filter(|t| {
+                    t.kind() == "call_expression"
+                        && t.named_child(0)
+                            .is_some_and(|c| c.kind() == "navigation_expression")
+                }) {
+                    target = t
+                        .named_child(0)
+                        .and_then(|nav| nav.child_by_field_name("target"));
+                }
+                let Some(shape) = target.and_then(|t| crate::rules::callee_name(t, ctx.source))
+                else {
+                    continue;
+                };
+                if !SHAPES.contains(&shape) {
+                    continue;
+                }
+                let (modifiers, _) = modifier_chain(m.call, ctx.source);
+                if modifiers.iter().any(|m| m.starts_with("accessibility"))
+                    || in_preview(m.call, ctx.source)
+                {
+                    continue;
+                }
+                let pos = ternary.start_position();
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "Status conveyed by color alone — inaccessible to color-blind users"
+                        .into(),
+                    file: ctx.file_path.to_string(),
+                    line: pos.row as u32 + 1,
+                    column: Some(pos.column as u32 + 1),
+                    symbol: None,
+                    fix: Some("Add text label, icon, or accessibilityLabel alongside color".into()),
+                });
+            }
         }
 
         issues
@@ -195,53 +318,66 @@ impl AuditRule for SmallTouchTarget {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find .frame(width:, height:) with small values on buttons/tappable views
-        let frames = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "call_expression" {
-                return false;
+        let enlarges = |m: &&str| matches!(*m, "padding" | "contentShape");
+        for m in modifier_calls(root, ctx.source, "frame") {
+            let args = m
+                .call
+                .named_child(1)
+                .map(|a| node_text(a, ctx.source))
+                .unwrap_or("");
+            if args.contains("minHeight") {
+                continue;
             }
-            let text = node_text(node, src);
-            text.contains(".frame(") && text.contains("height:")
-        });
-
-        for frame in frames {
-            let text = node_text(frame, ctx.source);
-            // Try to extract height value
-            if let Some(height_idx) = text.find("height:") {
-                let after = &text[height_idx + 7..];
-                let num_str: String = after
-                    .trim()
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit() || *c == '.')
-                    .collect();
-                if let Ok(height) = num_str.parse::<f64>() {
-                    if height < 44.0 && height > 0.0 {
-                        // Check if it's tappable
-                        let parent_text = frame
-                            .parent()
-                            .map(|p| node_text(p, ctx.source))
-                            .unwrap_or("");
-                        if parent_text.contains("onTapGesture")
-                            || parent_text.contains("Button")
-                            || parent_text.contains("NavigationLink")
-                        {
-                            issues.push(AuditIssue {
-                                id: format!("{}:{}", self.id(), ctx.file_path),
-                                category: self.category(),
-                                severity: self.severity(),
-                                rule: self.id().to_string(),
-                                message: format!(
-                                    "Touch target height {height}pt is below 44pt minimum — hard to tap"
-                                ),
-                                file: ctx.file_path.to_string(),
-                                line: frame.start_position().row as u32 + 1,
-                                symbol: None,
-                                fix: Some("Ensure minimum 44x44pt touch target or use .contentShape(Rectangle())".into()),
-                            });
-                        }
-                    }
-                }
+            let Some(height_idx) = args.find("height:") else {
+                continue;
+            };
+            let num: String = args[height_idx + 7..]
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            let Ok(height) = num.parse::<f64>() else {
+                continue;
+            };
+            if !(height > 0.0 && height < 44.0) || in_preview(m.call, ctx.source) {
+                continue;
             }
+            // Modifiers applied after the frame, and the view's placement
+            let (after, outer) = modifier_chain(m.call, ctx.source);
+            if after.iter().any(enlarges) {
+                continue;
+            }
+            let tappable = after
+                .iter()
+                .any(|m| matches!(*m, "onTapGesture" | "onLongPressGesture"));
+            let control_label = outer
+                .parent()
+                .filter(|p| p.kind() == "statements" && p.named_child_count() == 1)
+                .and_then(|statements| label_owner(statements, ctx.source))
+                .is_some_and(|control| {
+                    let (control_mods, _) = modifier_chain(control, ctx.source);
+                    !control_mods.iter().any(|m| enlarges(m) || *m == "frame")
+                });
+            if !(tappable || control_label) {
+                continue;
+            }
+            let (line, column) = m.position();
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: format!(
+                    "Touch target height {height}pt is below 44pt minimum — hard to tap"
+                ),
+                file: ctx.file_path.to_string(),
+                line,
+                column: Some(column),
+                symbol: None,
+                fix: Some(
+                    "Ensure minimum 44x44pt touch target or use .contentShape(Rectangle())".into(),
+                ),
+            });
         }
 
         issues

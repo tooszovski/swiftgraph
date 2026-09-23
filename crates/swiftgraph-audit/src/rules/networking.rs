@@ -50,6 +50,7 @@ impl AuditRule for DeprecatedReachability {
                 ),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Migrate to Network.framework (NWConnection, NWPathMonitor)".into()),
             });
@@ -98,6 +99,7 @@ impl AuditRule for MissingNetworkErrorHandling {
                 message: "`try?` on URLSession call silently swallows network errors".into(),
                 file: ctx.file_path.to_string(),
                 line: expr.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Use try/catch and handle network errors explicitly (timeout, no connection, etc.)"
@@ -155,6 +157,7 @@ impl AuditRule for HardcodedUrl {
                 message: "Hardcoded IP address in URL — use configuration or DNS".into(),
                 file: ctx.file_path.to_string(),
                 line: s.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some("Move to a configuration file or environment variable".into()),
             });
@@ -209,6 +212,7 @@ impl AuditRule for ReachabilityPrecheck {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: check.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Remove pre-check; network state can change between check and request".into(),
@@ -266,6 +270,7 @@ impl AuditRule for MissingTimeout {
                         .into(),
                     file: ctx.file_path.to_string(),
                     line: config.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Set timeoutIntervalForRequest and timeoutIntervalForResource".into(),
@@ -319,6 +324,7 @@ impl AuditRule for SharedSessionForTransfer {
                         .into(),
                 file: ctx.file_path.to_string(),
                 line: call.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Use a custom URLSession with background configuration for large transfers"

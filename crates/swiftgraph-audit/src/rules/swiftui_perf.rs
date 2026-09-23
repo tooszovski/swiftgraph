@@ -48,6 +48,7 @@ impl AuditRule for ComplexBody {
                     ),
                     file: ctx.file_path.to_string(),
                     line: prop.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some("Break body into smaller extracted subviews".into()),
                 });
@@ -106,6 +107,7 @@ impl AuditRule for HeavyOnAppear {
                     message: "Synchronous heavy work in .onAppear — may cause frame drops".into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
+                    column: None,
                     symbol: None,
                     fix: Some(
                         "Wrap heavy work in a Task { } block to avoid blocking the main thread"
@@ -172,6 +174,7 @@ impl AuditRule for MissingEquatable {
                         ),
                         file: ctx.file_path.to_string(),
                         line: decl.start_position().row as u32 + 1,
+                        column: None,
                         symbol: Some(name),
                         fix: Some("Add Equatable conformance for efficient SwiftUI diffing".into()),
                     });
@@ -224,6 +227,7 @@ impl AuditRule for StateObjectDeprecated {
                 message: "@StateObject can be replaced with @State + @Observable (iOS 17+)".into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
+                column: None,
                 symbol: None,
                 fix: Some(
                     "Migrate to @Observable class with @State instead of @StateObject".into(),
@@ -353,6 +357,7 @@ impl AuditRule for NonLazyList {
                         },
                         file: ctx.file_path.to_string(),
                         line: call.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Use List, LazyVStack, or LazyHStack for better performance with many items".into()),
                     });
@@ -419,6 +424,7 @@ impl AuditRule for ExpensiveInBody {
                         ),
                         file: ctx.file_path.to_string(),
                         line: prop.start_position().row as u32 + 1,
+                        column: None,
                         symbol: None,
                         fix: Some("Move to a computed property, onAppear, or cache as a stored property".into()),
                     });

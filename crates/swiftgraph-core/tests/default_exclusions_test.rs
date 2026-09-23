@@ -68,3 +68,32 @@ fn test_path_predicate() {
         assert!(!is_test_or_manifest(path), "{path}");
     }
 }
+
+#[test]
+fn cycles_skip_test_targets_by_default() {
+    use swiftgraph_core::analysis::cycles;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("db.sqlite");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/resolution");
+    pipeline::index_directory_with_options(&db, &root, true, None, &SwiftSyntaxMode::Disabled)
+        .unwrap();
+    let conn = storage::open_db(&db).unwrap();
+
+    let all = cycles::detect_cycles_from_conn(&conn, None, 100, true).unwrap();
+    assert!(
+        all.cycles
+            .iter()
+            .any(|c| c.files.iter().all(|f| f.contains("AppUITests/"))),
+        "fixture cycle not found: {:?}",
+        all.cycles
+    );
+    let default = cycles::detect_cycles_from_conn(&conn, None, 100, false).unwrap();
+    assert!(
+        default
+            .cycles
+            .iter()
+            .all(|c| c.files.iter().all(|f| !excluded(f))),
+        "{:?}",
+        default.cycles
+    );
+}

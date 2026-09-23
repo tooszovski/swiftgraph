@@ -142,6 +142,9 @@ enum Command {
         /// Max cycles
         #[arg(long, default_value = "20")]
         max_cycles: u32,
+        /// Include test targets and Package.swift manifests
+        #[arg(long)]
+        include_tests: bool,
     },
     /// Analyze module coupling metrics
     Coupling {
@@ -347,11 +350,19 @@ async fn main() -> Result<()> {
             )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
-        Command::Cycles { path, max_cycles } => {
+        Command::Cycles {
+            path,
+            max_cycles,
+            include_tests,
+        } => {
             let root = get_project_root(None);
             let db_path = root.join(".swiftgraph/db.sqlite");
-            let result =
-                tools::navigation::get_cycles(&db_path, path.as_deref(), Some(max_cycles))?;
+            let result = tools::navigation::get_cycles(
+                &db_path,
+                path.as_deref(),
+                Some(max_cycles),
+                include_tests,
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Watch { project, debounce } => {

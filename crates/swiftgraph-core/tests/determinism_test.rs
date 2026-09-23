@@ -164,7 +164,9 @@ fn analyses_are_deterministic() {
     assert_stable("complexity fan_in", || {
         complexity::analyze_complexity(db, None, 7, "fan_in", true).unwrap()
     });
-    assert_stable("cycles", || cycles::detect_cycles(db, None, 5).unwrap());
+    assert_stable("cycles", || {
+        cycles::detect_cycles(db, None, 5, true).unwrap()
+    });
     assert_stable("dead_code", || {
         dead_code::find_dead_code(db, None, true, 50).unwrap()
     });

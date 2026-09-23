@@ -144,6 +144,8 @@ pub struct CyclesToolParams {
     pub path: Option<String>,
     /// Max cycles to return (default 20)
     pub max_cycles: Option<u32>,
+    /// Include test targets and Package.swift manifests (default false)
+    pub include_tests: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -621,7 +623,12 @@ impl SwiftGraphServer {
     ) -> String {
         let db_path = self.db_path.clone();
         self.with_request_span("swiftgraph_cycles", || {
-            match navigation::get_cycles(&db_path, params.path.as_deref(), params.max_cycles) {
+            match navigation::get_cycles(
+                &db_path,
+                params.path.as_deref(),
+                params.max_cycles,
+                params.include_tests.unwrap_or(false),
+            ) {
                 Ok(resp) => serde_json::to_string_pretty(&resp).unwrap_or_default(),
                 Err(e) => json!({"error": e.to_string()}).to_string(),
             }

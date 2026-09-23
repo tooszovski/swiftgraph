@@ -81,7 +81,7 @@ fn graph() -> Connection {
 #[test]
 fn cycles_ignore_ambiguous_edges() {
     let conn = graph();
-    let result = cycles::detect_cycles_from_conn(&conn, None, 100).unwrap();
+    let result = cycles::detect_cycles_from_conn(&conn, None, 100, true).unwrap();
     assert!(result.cycles.is_empty(), "{:?}", result.cycles);
     assert!(!result.truncated);
 }

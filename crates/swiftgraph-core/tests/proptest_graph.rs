@@ -23,7 +23,7 @@ proptest! {
     #[test]
     fn cycles_no_crash_on_arbitrary_graph((n, edges) in arb_graph(30, 50)) {
         let conn = test_helpers::create_random_graph(n, &edges);
-        let result = cycles::detect_cycles_from_conn(&conn, None, 100);
+        let result = cycles::detect_cycles_from_conn(&conn, None, 100, true);
         prop_assert!(result.is_ok());
     }
 
@@ -31,7 +31,7 @@ proptest! {
     fn known_cycle_is_detected(_dummy in 0..1u32) {
         // A → B → C → A
         let conn = test_helpers::create_random_graph(3, &[(0, 1), (1, 2), (2, 0)]);
-        let result = cycles::detect_cycles_from_conn(&conn, None, 100).unwrap();
+        let result = cycles::detect_cycles_from_conn(&conn, None, 100, true).unwrap();
         // At least one cycle should be detected
         prop_assert!(!result.cycles.is_empty(), "Expected cycle A→B→C→A to be detected");
     }
@@ -40,7 +40,7 @@ proptest! {
     fn acyclic_graph_has_no_cycles(_dummy in 0..1u32) {
         // Linear DAG: 0 → 1 → 2 → 3
         let conn = test_helpers::create_random_graph(4, &[(0, 1), (1, 2), (2, 3)]);
-        let result = cycles::detect_cycles_from_conn(&conn, None, 100).unwrap();
+        let result = cycles::detect_cycles_from_conn(&conn, None, 100, true).unwrap();
         prop_assert!(result.cycles.is_empty(), "DAG should have no cycles, found {:?}", result.cycles);
     }
 

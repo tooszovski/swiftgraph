@@ -466,8 +466,14 @@ pub fn get_cycles(
     db_path: &Path,
     path_filter: Option<&str>,
     max_cycles: Option<u32>,
+    include_tests: bool,
 ) -> Result<analysis::cycles::CycleResult> {
-    let result = analysis::cycles::detect_cycles(db_path, path_filter, max_cycles.unwrap_or(20))?;
+    let result = analysis::cycles::detect_cycles(
+        db_path,
+        path_filter,
+        max_cycles.unwrap_or(20),
+        include_tests,
+    )?;
     Ok(result)
 }
 

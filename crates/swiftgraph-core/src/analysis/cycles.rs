@@ -41,13 +41,17 @@ pub struct CycleResult {
 const MAX_FILE_PAIRS: u32 = 2_000_000;
 
 /// Detect file-level dependency cycles.
+///
+/// Test targets and `Package.swift` manifests are left out unless
+/// `include_tests` is set (see [`super::is_test_or_manifest`]).
 pub fn detect_cycles(
     db_path: &Path,
     path_filter: Option<&str>,
     max_cycles: u32,
+    include_tests: bool,
 ) -> Result<CycleResult, CycleError> {
     let conn = storage::open_db(db_path)?;
-    detect_cycles_from_conn(&conn, path_filter, max_cycles)
+    detect_cycles_from_conn(&conn, path_filter, max_cycles, include_tests)
 }
 
 /// Detect file-level dependency cycles from an existing connection.
@@ -55,6 +59,7 @@ pub fn detect_cycles_from_conn(
     conn: &rusqlite::Connection,
     path_filter: Option<&str>,
     max_cycles: u32,
+    include_tests: bool,
 ) -> Result<CycleResult, CycleError> {
     // Build file-level dependency graph (ambiguous call edges excluded)
     let edges = queries::get_cross_file_edges(conn, path_filter, MAX_FILE_PAIRS)?;
@@ -65,7 +70,9 @@ pub fn detect_cycles_from_conn(
     let mut all_files: BTreeSet<String> = BTreeSet::new();
 
     for (source_file, target_file) in &edges {
-        if source_file != target_file {
+        let skipped = !include_tests
+            && (super::is_test_or_manifest(source_file) || super::is_test_or_manifest(target_file));
+        if source_file != target_file && !skipped {
             file_deps
                 .entry(source_file.clone())
                 .or_default()

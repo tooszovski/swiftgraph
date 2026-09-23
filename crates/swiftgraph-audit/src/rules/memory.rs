@@ -57,7 +57,28 @@ const NON_ESCAPING_CALLS: &[&str] = &[
 
 /// Combine operators: a closure anywhere in such a chain lives as long as
 /// the subscription.
-const COMBINE_MARKERS: &[&str] = &[".sink", ".store(in:", ".assign(to:", ".eraseToAnyPublisher"];
+const COMBINE_MARKERS: &[&str] = &[
+    ".sink",
+    ".store(in:",
+    ".assign(to:",
+    ".eraseToAnyPublisher",
+    // RxSwift
+    ".disposed(by:",
+];
+
+/// Dispose bags owned by `self` (`disposeBag`, `rx.disposeBag`).
+fn disposed_by_self(chain: &str) -> bool {
+    chain.match_indices(".disposed(by:").any(|(i, m)| {
+        let bag = chain[i + m.len()..]
+            .trim_start()
+            .split(')')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_start_matches("self.");
+        matches!(bag, "disposeBag" | "rx.disposeBag" | "bag")
+    })
+}
 
 /// Parameter labels and call names that usually take stored callbacks.
 const ESCAPING_WORDS: &[&str] = &[
@@ -99,12 +120,15 @@ enum Escape {
     /// Stored by `self`: assigned to a property, or a Combine subscription
     /// kept in `self`'s storage.
     Stored,
+    /// Kept by another object (its dispose bag): a cycle if `self` owns it.
+    Retained,
     /// Passed as a completion-like callback; retained while the work runs.
     Callback,
 }
 
 fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
     let parent = closure.parent()?;
+    let mut callback_label = false;
     let call = match parent.kind() {
         // `handler = { ... }`, `self.onTap = { ... }`
         "assignment" => return Some(Escape::Stored),
@@ -131,11 +155,10 @@ fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
                         .map(chain_root)
                         .and_then(|root| root.parent())
                         .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
-                    return Some(if stored_result {
-                        Escape::Stored
-                    } else {
-                        Escape::Callback
-                    });
+                    if stored_result {
+                        return Some(Escape::Stored);
+                    }
+                    callback_label = true;
                 }
             }
             parent.parent().and_then(|args| args.parent())
@@ -159,16 +182,23 @@ fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
         // Only a subscription kept by `self` closes the cycle; a pipeline
         // returned to the caller is owned there.
         let kept = chain.contains(".store(in:")
+            || disposed_by_self(chain)
             || root
                 .parent()
                 .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
-        return kept.then_some(Escape::Stored);
+        if kept {
+            return Some(Escape::Stored);
+        }
+        // Rx subscription kept by another object's bag: a cycle only if self
+        // owns that object
+        return chain.contains(".disposed(by:").then_some(Escape::Retained);
     }
-    if NON_ESCAPING_CALLS.contains(&name) {
+    if NON_ESCAPING_CALLS.contains(&name) && !callback_label {
         return None;
     }
-    // Trailing closure of a completion-like call
-    (parent.kind() == "call_suffix" && escaping_word(name)).then_some(Escape::Callback)
+    // Completion-like argument or trailing closure of a completion-like call
+    (callback_label || (parent.kind() == "call_suffix" && escaping_word(name)))
+        .then_some(Escape::Callback)
 }
 
 /// Whether `self` is used in the closure outside its capture list.
@@ -213,7 +243,13 @@ impl AuditRule for ClosureRetainCycle {
             let has_self = text.contains("self.") && uses_self(closure);
             let has_weak_self = text.contains("[weak self]") || text.contains("[unowned self]");
 
-            if !has_self || has_weak_self {
+            // `[self]` in the capture list: a deliberate strong capture
+            let explicit_strong = text
+                .split_once(']')
+                .map(|(head, _)| head)
+                .and_then(|head| head.split_once('['))
+                .is_some_and(|(_, list)| list.split(',').any(|c| c.trim() == "self"));
+            if !has_self || has_weak_self || explicit_strong {
                 continue;
             }
             if crate::rules::in_value_type(closure, ctx.source, ctx.project) {
@@ -237,7 +273,8 @@ impl AuditRule for ClosureRetainCycle {
                     // storage owned by `self` makes a lasting cycle.
                     severity: match kind {
                         Escape::Stored => self.severity(),
-                        Escape::Callback => Severity::Low,
+                        Escape::Retained => Severity::Low,
+                        Escape::Callback => Severity::Advisory,
                     },
                     rule: self.id().to_string(),
                     message: "Closure captures `self` strongly in potentially escaping context"
@@ -490,33 +527,48 @@ impl AuditRule for ObserverLeak {
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
+        let root = ctx.tree.root_node();
         let mut issues = Vec::new();
+        let removes = ctx.source.contains("removeObserver(");
 
-        let has_add_observer = ctx
-            .source
-            .contains("NotificationCenter.default.addObserver");
-        let has_remove = ctx.source.contains("removeObserver")
-            || ctx
-                .source
-                .contains("NotificationCenter.default.removeObserver");
-
-        if has_add_observer && !has_remove {
-            for (i, line) in ctx.source.lines().enumerate() {
-                if line.contains("addObserver") {
-                    issues.push(AuditIssue {
-                        id: format!("{}:{}", self.id(), ctx.file_path),
-                        category: self.category(),
-                        severity: self.severity(),
-                        rule: self.id().to_string(),
-                        message: "NotificationCenter observer added but no `removeObserver` found in this file".into(),
-                        file: ctx.file_path.to_string(),
-                        line: i as u32 + 1,
-                        column: None,
-                        symbol: None,
-                        fix: Some("Remove observer in deinit: `NotificationCenter.default.removeObserver(self)`".into()),
-                    });
-                }
+        // Selector-based observers are removed automatically since iOS 9;
+        // block-based ones stay until their token is removed.
+        for call in addobserver_calls(root, ctx.source) {
+            let callee = call
+                .named_child(0)
+                .map(|c| node_text(c, ctx.source))
+                .unwrap_or("");
+            let args = call
+                .named_child(1)
+                .map(|a| node_text(a, ctx.source))
+                .unwrap_or("");
+            let block_based = args.contains("forName:");
+            if !callee.contains("NotificationCenter") || !block_based {
+                continue;
             }
+            let root_expr = chain_root(call);
+            let token_kept = root_expr
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
+            if token_kept && removes {
+                continue;
+            }
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: if token_kept {
+                    "Block-based NotificationCenter observer token is never removed".into()
+                } else {
+                    "Block-based NotificationCenter observer token is discarded — the observer is never removed".into()
+                },
+                file: ctx.file_path.to_string(),
+                line: call.start_position().row as u32 + 1,
+                column: Some(call.start_position().column as u32 + 1),
+                symbol: None,
+                fix: Some("Keep the returned token and call `NotificationCenter.default.removeObserver(token)`".into()),
+            });
         }
 
         issues
@@ -544,57 +596,62 @@ impl AuditRule for KvoLeak {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find calls to observe(_:options:changeHandler:) or addObserver(_:forKeyPath:...)
-        let calls = find_descendants(root, ctx.source, &|node, src| {
-            if node.kind() != "call_expression" {
-                return false;
-            }
-            let text = node_text(node, src);
-            text.contains(".observe(") || text.contains("addObserver(")
-        });
-
-        for call in calls {
-            let text = node_text(call, ctx.source);
-            // Modern KVO (observe) returns a token — check if it's stored
-            if text.contains(".observe(") {
-                // Check if the result is assigned to a property
-                if let Some(parent) = call.parent() {
-                    let parent_text = node_text(parent, ctx.source);
-                    if !parent_text.contains("= ") && !parent_text.contains("let ") {
-                        issues.push(AuditIssue {
-                            id: format!("{}:{}", self.id(), ctx.file_path),
-                            category: self.category(),
-                            severity: self.severity(),
-                            rule: self.id().to_string(),
-                            message: "KVO observation result not stored — will be immediately invalidated".into(),
-                            file: ctx.file_path.to_string(),
-                            line: call.start_position().row as u32 + 1,
-                            column: None,
-                            symbol: None,
-                            fix: Some("Store the NSKeyValueObservation token in a property".into()),
-                        });
-                    }
-                }
-            }
-
-            // Legacy KVO: addObserver without matching removeObserver
-            if text.contains("addObserver(") && !ctx.source.contains("removeObserver(") {
+        // Modern KVO: `object.observe(\.keyPath) { }` returns a token
+        for call in find_descendants(root, ctx.source, &|node, src| {
+            node.kind() == "call_expression"
+                && crate::rules::callee_name(node, src) == Some("observe")
+                && node.named_child(1).is_some_and(|a| {
+                    node_text(a, src)
+                        .trim_start_matches('(')
+                        .trim_start()
+                        .starts_with('\\')
+                })
+        }) {
+            let stored = chain_root(call)
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
+            if !stored {
                 issues.push(AuditIssue {
                     id: format!("{}:{}", self.id(), ctx.file_path),
                     category: self.category(),
                     severity: self.severity(),
                     rule: self.id().to_string(),
-                    message: "addObserver() without matching removeObserver() — KVO leak".into(),
+                    message: "KVO observation result not stored — will be immediately invalidated"
+                        .into(),
                     file: ctx.file_path.to_string(),
                     line: call.start_position().row as u32 + 1,
-                    column: None,
+                    column: Some(call.start_position().column as u32 + 1),
                     symbol: None,
-                    fix: Some(
-                        "Call removeObserver() in deinit or use modern KVO with observation tokens"
-                            .into(),
-                    ),
+                    fix: Some("Store the NSKeyValueObservation token in a property".into()),
                 });
             }
+        }
+
+        // Classic KVO: `addObserver(_:forKeyPath:options:context:)`
+        let removes = ctx.source.contains("removeObserver(") && ctx.source.contains("forKeyPath:");
+        for call in addobserver_calls(root, ctx.source) {
+            let args = call
+                .named_child(1)
+                .map(|a| node_text(a, ctx.source))
+                .unwrap_or("");
+            if !args.contains("forKeyPath:") || removes {
+                continue;
+            }
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: "addObserver(_:forKeyPath:) without matching removeObserver — KVO leak".into(),
+                file: ctx.file_path.to_string(),
+                line: call.start_position().row as u32 + 1,
+                column: Some(call.start_position().column as u32 + 1),
+                symbol: None,
+                fix: Some(
+                    "Call removeObserver(_:forKeyPath:) in deinit or use `observe(_:options:changeHandler:)` tokens"
+                        .into(),
+                ),
+            });
         }
 
         issues
@@ -664,4 +721,15 @@ pub fn all_rules() -> Vec<Box<dyn AuditRule>> {
         Box::new(KvoLeak),
         Box::new(PhotoKitAccumulation),
     ]
+}
+
+/// Calls to a method named `addObserver` (not declarations of one).
+fn addobserver_calls<'a>(
+    root: tree_sitter::Node<'a>,
+    source: &'a str,
+) -> Vec<tree_sitter::Node<'a>> {
+    find_descendants(root, source, &|node, src| {
+        node.kind() == "call_expression"
+            && crate::rules::callee_name(node, src) == Some("addObserver")
+    })
 }

@@ -34,10 +34,35 @@ impl AuditRule for ManualJsonBuilding {
         });
 
         for call in calls {
+            // Logging and pretty-printing are not a model layer
+            let text = node_text(call, ctx.source);
+            let mut context = String::new();
+            let mut up = call.parent();
+            while let Some(n) = up {
+                if matches!(
+                    n.kind(),
+                    "function_declaration" | "property_declaration" | "class_declaration"
+                ) {
+                    if let Some(name) = crate::rules::decl_name(n, ctx.source) {
+                        context.push_str(&name);
+                        context.push(' ');
+                    }
+                }
+                up = n.parent();
+            }
+            let lower = context.to_lowercase();
+            let diagnostic = text.contains("prettyPrinted")
+                || ["log", "debug", "print", "pretty", "description", "dump"]
+                    .iter()
+                    .any(|w| lower.contains(w));
             issues.push(AuditIssue {
                 id: format!("{}:{}", self.id(), ctx.file_path),
                 category: self.category(),
-                severity: self.severity(),
+                severity: if diagnostic {
+                    Severity::Advisory
+                } else {
+                    self.severity()
+                },
                 rule: self.id().to_string(),
                 message: "Using JSONSerialization instead of Codable — less type-safe".into(),
                 file: ctx.file_path.to_string(),
@@ -127,7 +152,10 @@ impl AuditRule for TryOptionalDecoding {
                 top = p;
             }
             let text = node_text(top, src);
-            text.contains(".decode(") && text.contains(".self")
+            // Top-level decodes (`decoder.decode(T.self, from: data)`); a
+            // `try? container.decode(..., forKey:)` in `init(from:)` is the
+            // usual way to make a field optional
+            text.contains(".decode(") && text.contains(".self") && text.contains("from:")
         });
 
         for expr in try_exprs {

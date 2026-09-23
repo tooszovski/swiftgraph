@@ -137,7 +137,11 @@ impl AuditRule for EnvironmentObjectUsage {
         Category::SwiftuiArchitecture
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory migration suggestion
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

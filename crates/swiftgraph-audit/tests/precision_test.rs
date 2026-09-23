@@ -99,7 +99,7 @@ final class Manager {
 "#;
     assert_eq!(
         found(&check(&rule, source)),
-        vec![(15, Severity::High), (16, Severity::Low)]
+        vec![(15, Severity::High), (16, Severity::Advisory)]
     );
 }
 
@@ -324,5 +324,120 @@ final class WatchedModel: NSObject {
     assert_eq!(
         found(&rule.check(&ctx)),
         vec![(2, Severity::Low), (9, Severity::High)]
+    );
+}
+
+// Third round: patterns from 17 projects.
+
+#[test]
+fn mem005_is_about_kvo_only() {
+    let rule = rules::memory::KvoLeak;
+    let source = r#"
+final class Watcher: NSObject {
+    func start() {
+        deviceShakeNotifier.addObserver(self)
+        NotificationCenter.default.addObserver(forName: .changed, object: nil, queue: .main) { _ in }
+        player.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+    }
+}
+"#;
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![6]);
+}
+
+#[test]
+fn mem004_flags_unremoved_block_observers_not_selectors_or_declarations() {
+    let rule = rules::memory::ObserverLeak;
+    let source = r#"
+final class Screen {
+    public func addObserver(_ observer: AnyObject) {}
+    func bind() {
+        shakeManager.addObserver(self)
+        NotificationCenter.default.addObserver(self, selector: #selector(update), name: .changed, object: nil)
+        NotificationCenter.default.addObserver(forName: .changed, object: nil, queue: .main) { _ in self.update() }
+    }
+}
+"#;
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![7]);
+    // Keeping the token and removing it later is fine
+    let kept = "final class S {\n    var token: NSObjectProtocol?\n    func bind() {\n        token = NotificationCenter.default.addObserver(forName: .x, object: nil, queue: nil) { _ in }\n    }\n    deinit { NotificationCenter.default.removeObserver(token!) }\n}\n";
+    assert!(check(&rule, kept).is_empty());
+}
+
+#[test]
+fn cod002_flags_top_level_decodes_not_optional_fields() {
+    let rule = rules::codable::TryOptionalDecoding;
+    let source = r#"
+struct Item: Decodable {
+    let nickname: String?
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nickname = try? container.decode(String.self, forKey: .nickname)
+    }
+}
+func load(_ data: Data) {
+    let item = try? JSONDecoder().decode(Item.self, from: data) ?? Item.empty
+}
+"#;
+    let lines: Vec<u32> = check(&rule, source).iter().map(|i| i.line).collect();
+    assert_eq!(lines, vec![10]);
+}
+
+#[test]
+fn cod001_ignores_logging_and_pretty_printing() {
+    let rule = rules::codable::ManualJsonBuilding;
+    let source = r#"
+final class RequestLogger {
+    func log(_ body: Data) {
+        let object = try? JSONSerialization.jsonObject(with: body)
+        print(object as Any)
+    }
+}
+extension Dictionary {
+    var prettyJSON: String {
+        let data = try? JSONSerialization.data(withJSONObject: self, options: .prettyPrinted)
+        return String(data: data ?? Data(), encoding: .utf8) ?? ""
+    }
+}
+final class ProfileService {
+    func parse(_ data: Data) -> [String: Any]? {
+        try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+}
+"#;
+    let found: Vec<(u32, Severity)> = found(&check(&rule, source));
+    assert_eq!(
+        found
+            .iter()
+            .filter(|(_, s)| *s != Severity::Advisory)
+            .map(|(l, _)| *l)
+            .collect::<Vec<_>>(),
+        vec![16]
+    );
+}
+
+#[test]
+fn mem001_rx_subscriptions_kept_by_self_are_cycles() {
+    let rule = rules::memory::ClosureRetainCycle;
+    let source = r#"
+final class ListViewController: UIViewController {
+    func bind() {
+        viewModel.items.drive(onNext: { items in
+            self.render(items)
+        }).disposed(by: rx.disposeBag)
+        child.relay.bind(onNext: { self.close() }).disposed(by: child.disposeBag)
+        UIView.animate(withDuration: 0.2, animations: {}, completion: { _ in self.finish() })
+        loader.load(completion: { [self] result in self.apply(result) })
+    }
+}
+"#;
+    assert_eq!(
+        found(&check(&rule, source)),
+        vec![
+            (4, Severity::High),
+            (7, Severity::Low),
+            (8, Severity::Advisory)
+        ]
     );
 }

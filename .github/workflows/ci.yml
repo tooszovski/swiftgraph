@@ -34,6 +34,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Cache swift-syntax build
+        uses: actions/cache@v4
+        with:
+          path: crates/swiftgraph-parser/.build
+          key: ${{ runner.os }}-swiftpm-${{ hashFiles('crates/swiftgraph-parser/Package.swift') }}
+
+      - name: Build swiftgraph-parser
+        working-directory: crates/swiftgraph-parser
+        run: swift build -c release
+
+      - name: Test swiftgraph-parser
+        working-directory: crates/swiftgraph-parser
+        run: swift test
+
       - name: Check
         run: cargo check --workspace --locked
 
@@ -44,4 +58,6 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Test
+        env:
+          SWIFTGRAPH_PARSER_PATH: ${{ github.workspace }}/crates/swiftgraph-parser/.build/release/swiftgraph-parser
         run: cargo test --workspace --locked

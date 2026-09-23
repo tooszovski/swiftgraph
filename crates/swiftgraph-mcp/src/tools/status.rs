@@ -21,6 +21,9 @@ pub struct StatusResponse {
     /// `None` if the project has not been indexed yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_strategy: Option<String>,
+    /// swift-syntax parser used for enrichment (`None` if missing or
+    /// incompatible, in which case indexing runs without enrichment).
+    pub swift_syntax_parser: Option<String>,
 }
 
 /// Build the status report. Never fails just because no project markers were
@@ -72,5 +75,7 @@ pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
         index_store_available: index_store_path.is_some(),
         db_path: db_path.to_string_lossy().to_string(),
         index_strategy,
+        swift_syntax_parser: swiftgraph_core::swift_syntax::SwiftSyntaxParser::discover()
+            .map(|p| p.describe()),
     })
 }

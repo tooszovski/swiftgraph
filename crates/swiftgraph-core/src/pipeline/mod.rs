@@ -27,12 +27,30 @@ pub enum PipelineError {
 /// Result of indexing a project.
 #[derive(Debug)]
 pub struct IndexResult {
+    /// Swift files found under the root after include/exclude filtering.
     pub files_scanned: usize,
+    /// Files whose data was (re)written in this run.
     pub files_indexed: usize,
+    /// Nodes written.
     pub nodes_added: usize,
+    /// Edges written.
     pub edges_added: usize,
     /// Which indexing strategy was used.
     pub strategy: IndexStrategy,
+    /// Nodes enriched by swift-syntax (0 when the parser is unavailable).
+    pub nodes_enriched: usize,
+}
+
+/// Whether the pipeline enriches tree-sitter declarations with swift-syntax.
+#[derive(Debug, Clone, Default)]
+pub enum SwiftSyntaxMode {
+    /// Discover `swiftgraph-parser` and use it if the handshake passes.
+    #[default]
+    Auto,
+    /// Never run swift-syntax.
+    Disabled,
+    /// Use this (already verified) parser.
+    Parser(crate::swift_syntax::SwiftSyntaxParser),
 }
 
 /// Which indexing backend was used.
@@ -89,6 +107,23 @@ pub fn index_directory_with_store(
     source_root: &Path,
     force: bool,
     index_store_path: Option<&Path>,
+) -> Result<IndexResult, PipelineError> {
+    index_directory_with_options(
+        db_path,
+        source_root,
+        force,
+        index_store_path,
+        &SwiftSyntaxMode::Auto,
+    )
+}
+
+/// Index with an explicit Index Store path and swift-syntax mode.
+pub fn index_directory_with_options(
+    db_path: &Path,
+    source_root: &Path,
+    force: bool,
+    index_store_path: Option<&Path>,
+    swift_syntax: &SwiftSyntaxMode,
 ) -> Result<IndexResult, PipelineError> {
     let _span = info_span!("index_directory", root = %source_root.display()).entered();
     // Index Store paths are absolute; canonicalize so tree-sitter paths match them.
@@ -262,11 +297,21 @@ pub fn index_directory_with_store(
 
     conn.execute("COMMIT", [])?;
 
-    // 4. Optional swift-syntax enrichment (if parser binary available)
-    if let Some(parser_path) = crate::swift_syntax::find_parser() {
-        let enriched = enrich_with_swift_syntax(&conn, &parser_path, &parse_results)?;
-        if enriched > 0 {
-            info!("swift-syntax enriched {enriched} nodes with attributes/doc-comments");
+    // 4. Optional swift-syntax enrichment (one batch parser process)
+    let parser = match swift_syntax {
+        SwiftSyntaxMode::Auto if !parse_results.is_empty() => {
+            crate::swift_syntax::SwiftSyntaxParser::discover()
+        }
+        SwiftSyntaxMode::Parser(p) => Some(p.clone()),
+        _ => None,
+    };
+    let mut nodes_enriched = 0;
+    if let Some(parser) = parser {
+        let files: Vec<std::path::PathBuf> =
+            parse_results.iter().map(|(p, _, _)| p.clone()).collect();
+        nodes_enriched = enrich_with_swift_syntax(&conn, &parser, &files)?;
+        if nodes_enriched > 0 {
+            info!("swift-syntax enriched {nodes_enriched} nodes");
         }
     }
 
@@ -302,6 +347,7 @@ pub fn index_directory_with_store(
         nodes_added,
         edges_added,
         strategy,
+        nodes_enriched,
     })
 }
 
@@ -454,94 +500,152 @@ fn resolve_name_edges(conn: &rusqlite::Connection) -> Result<usize, PipelineErro
     Ok(resolved)
 }
 
-/// Enrich tree-sitter-parsed nodes with swift-syntax data (attributes, doc comments, signatures).
+/// Enrich tree-sitter nodes of `files` with swift-syntax data: attributes,
+/// doc comments, access level and signature for declarations and their
+/// nested members, and attributes of imports (missing imports are added).
+///
+/// Runs one parser process for all files and writes in one transaction.
+/// Declarations are matched by file, name and the nearest line (ties broken
+/// by line and id, so the result is deterministic). Parser failures only
+/// skip enrichment; they never fail indexing.
 fn enrich_with_swift_syntax(
     conn: &rusqlite::Connection,
-    parser_path: &std::path::Path,
-    parse_results: &[(
-        std::path::PathBuf,
-        String,
-        crate::tree_sitter::parser::ParseResult,
-    )],
+    parser: &crate::swift_syntax::SwiftSyntaxParser,
+    files: &[std::path::PathBuf],
 ) -> Result<usize, PipelineError> {
-    let mut enriched_count = 0;
+    use crate::swift_syntax::Declaration;
 
-    for (path, _hash, _ts_result) in parse_results {
-        let syntax_result = match crate::swift_syntax::parse_file(parser_path, path) {
-            Ok(r) => r,
-            Err(e) => {
-                debug!("swift-syntax skipped {}: {e}", path.display());
-                continue;
+    let results = match parser.parse_batch(files) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!("swift-syntax enrichment skipped: {e}");
+            return Ok(0);
+        }
+    };
+
+    let tx = conn.unchecked_transaction()?;
+    let mut enriched = 0;
+    let mut failed = 0;
+    {
+        let mut find = tx.prepare(
+            "SELECT id FROM nodes WHERE file = ?1 AND name = ?2 AND ABS(line - ?3) <= 2
+             ORDER BY ABS(line - ?3), line, id LIMIT 1",
+        )?;
+        let mut update = tx.prepare(
+            "UPDATE nodes SET attributes = COALESCE(?1, attributes),
+                              doc_comment = COALESCE(?2, doc_comment),
+                              access_level = COALESCE(?3, access_level),
+                              signature = COALESCE(?4, signature)
+             WHERE id = ?5",
+        )?;
+        let mut find_import =
+            tx.prepare("SELECT id FROM nodes WHERE file = ?1 AND kind = 'import' AND name = ?2 ORDER BY line, id LIMIT 1")?;
+
+        fn access(level: &str) -> Option<&'static str> {
+            Some(match level {
+                "open" => "Open",
+                "public" => "Public",
+                "package" => "Package",
+                "internal" => "Internal",
+                "fileprivate" => "FilePrivate",
+                "private" => "Private",
+                _ => return None,
+            })
+        }
+
+        for (path, result) in files.iter().zip(results) {
+            let result = match result {
+                Ok(r) => r,
+                Err(e) => {
+                    failed += 1;
+                    debug!("swift-syntax skipped {e}");
+                    continue;
+                }
+            };
+            let file = path.to_string_lossy();
+
+            let mut stack: Vec<&Declaration> = result.declarations.iter().collect();
+            while let Some(decl) = stack.pop() {
+                if let Some(members) = &decl.members {
+                    stack.extend(members.iter());
+                }
+                let node_id: Option<String> = find
+                    .query_row(rusqlite::params![file, decl.name, decl.line], |r| r.get(0))
+                    .ok();
+                let Some(node_id) = node_id else { continue };
+                let attrs = (!decl.attributes.is_empty())
+                    .then(|| serde_json::to_string(&decl.attributes).unwrap_or_default());
+                let level = decl.access_level.as_deref().and_then(access);
+                if attrs.is_none()
+                    && decl.doc_comment.is_none()
+                    && level.is_none()
+                    && decl.signature.is_none()
+                {
+                    continue;
+                }
+                update.execute(rusqlite::params![
+                    attrs,
+                    decl.doc_comment,
+                    level,
+                    decl.signature,
+                    node_id
+                ])?;
+                enriched += 1;
             }
-        };
 
-        // Match declarations by name+line to existing nodes and update attributes/doc_comment
-        for decl in &syntax_result.declarations {
-            let path_str = path.to_string_lossy();
-            // Find matching node by name and approximate line
-            let matching_node = conn
-                .query_row(
-                    "SELECT id FROM nodes WHERE name = ?1 AND file = ?2 AND ABS(line - ?3) <= 2 LIMIT 1",
-                    rusqlite::params![decl.name, path_str.as_ref(), decl.line],
-                    |row| row.get::<_, String>(0),
-                )
-                .ok();
-
-            if let Some(node_id) = matching_node {
-                let mut updated = false;
-
-                // Enrich attributes if swift-syntax found more
-                if !decl.attributes.is_empty() {
-                    let attrs_json = serde_json::to_string(&decl.attributes).unwrap_or_default();
-                    conn.execute(
-                        "UPDATE nodes SET attributes = ?1 WHERE id = ?2",
-                        rusqlite::params![attrs_json, node_id],
-                    )?;
-                    updated = true;
-                }
-
-                // Enrich doc comment
-                if let Some(ref doc) = decl.doc_comment {
-                    conn.execute(
-                        "UPDATE nodes SET doc_comment = ?1 WHERE id = ?2",
-                        rusqlite::params![doc, node_id],
-                    )?;
-                    updated = true;
-                }
-
-                // Enrich access level
-                if let Some(ref access) = decl.access_level {
-                    let level = match access.as_str() {
-                        "open" => "Open",
-                        "public" => "Public",
-                        "package" => "Package",
-                        "internal" => "Internal",
-                        "fileprivate" => "FilePrivate",
-                        "private" => "Private",
-                        _ => "Internal",
-                    };
-                    conn.execute(
-                        "UPDATE nodes SET access_level = ?1 WHERE id = ?2",
-                        rusqlite::params![level, node_id],
-                    )?;
-                    updated = true;
-                }
-
-                // Enrich signature
-                if let Some(ref sig) = decl.signature {
-                    conn.execute(
-                        "UPDATE nodes SET signature = ?1 WHERE id = ?2",
-                        rusqlite::params![sig, node_id],
-                    )?;
-                    updated = true;
-                }
-
-                if updated {
-                    enriched_count += 1;
+            for import in &result.imports {
+                let existing: Option<String> = find_import
+                    .query_row(rusqlite::params![file, import.name], |r| r.get(0))
+                    .ok();
+                match existing {
+                    Some(id) if !import.attributes.is_empty() => {
+                        let attrs = serde_json::to_string(&import.attributes).unwrap_or_default();
+                        update.execute(rusqlite::params![
+                            Some(attrs),
+                            None::<String>,
+                            None::<String>,
+                            None::<String>,
+                            id
+                        ])?;
+                        enriched += 1;
+                    }
+                    Some(_) => {}
+                    None => {
+                        let line = import.line.max(1);
+                        let node = crate::graph::GraphNode {
+                            id: format!("ts::{file}::{}::{}", import.name, line - 1),
+                            name: import.name.clone(),
+                            qualified_name: import.name.clone(),
+                            kind: crate::graph::SymbolKind::Import,
+                            sub_kind: None,
+                            location: crate::graph::Location {
+                                file: file.to_string(),
+                                line,
+                                column: 1,
+                                end_line: Some(line),
+                                end_column: None,
+                            },
+                            signature: Some(format!("import {}", import.name)),
+                            attributes: import.attributes.clone(),
+                            access_level: crate::graph::AccessLevel::Internal,
+                            container_usr: None,
+                            doc_comment: None,
+                            metrics: None,
+                        };
+                        queries::upsert_node(&tx, &node)?;
+                        enriched += 1;
+                    }
                 }
             }
         }
     }
+    tx.commit()?;
 
-    Ok(enriched_count)
+    if failed > 0 {
+        warn!(
+            "swift-syntax could not parse {failed} of {} files",
+            files.len()
+        );
+    }
+    Ok(enriched)
 }

@@ -354,7 +354,7 @@ swiftgraph/
 │   └── swiftgraph-parser/   Optional Swift CLI on swift-syntax (SwiftPM package, not a Cargo crate)
 ```
 
-`swiftgraph-parser` enriches tree-sitter declarations with attributes, doc comments and signatures. It is optional: without it indexing works the same, minus that enrichment. Build it with `cd crates/swiftgraph-parser && swift build -c release` (Xcode 16+ / Swift 6 toolchain) and put the binary next to `swiftgraph`, on `PATH`, or point `SWIFTGRAPH_PARSER_PATH` at it.
+`swiftgraph-parser` enriches tree-sitter declarations and their nested members with attributes, doc comments, access levels and signatures, and adds import attributes such as `@testable`. SwiftGraph runs it once per index in batch mode (`--stdin`) and checks its protocol version with `--version`; `swiftgraph_status` shows the parser in use as `swiftSyntaxParser`. It does not yet run on files covered by the Index Store. It is optional: without it indexing works the same, minus that enrichment. Build it with `cd crates/swiftgraph-parser && swift build -c release` (Xcode 16+ / Swift 6 toolchain) and put the binary next to `swiftgraph`, on `PATH`, or point `SWIFTGRAPH_PARSER_PATH` at it.
 
 | Component | Technology |
 |-----------|-----------|
@@ -383,7 +383,8 @@ cargo build --workspace --release
 
 ```bash
 cargo build --workspace           # Build
-cargo test --workspace            # Test (91 tests; Index Store tests build a SwiftPM fixture, skipped without Xcode)
+cargo test --workspace            # Test (97 Rust tests; Index Store and real-parser tests are skipped without Xcode)
+cd crates/swiftgraph-parser && swift test  # swift-syntax parser tests
 cargo clippy --workspace --all-targets -- -D warnings  # Lint (zero warnings policy)
 cargo fmt --all                   # Format
 ```

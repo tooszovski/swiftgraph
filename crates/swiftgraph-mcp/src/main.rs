@@ -38,6 +38,11 @@ enum Command {
         #[arg(long)]
         index_store_path: Option<PathBuf>,
     },
+    /// Concurrency isolation, Sendable and cross-actor calls of a symbol
+    Concurrency {
+        /// Symbol name or USR
+        symbol: String,
+    },
     /// Show project, index and backend status
     Status {
         /// Project root path
@@ -233,6 +238,15 @@ async fn main() -> Result<()> {
         } => {
             let root = get_project_root(project);
             cmd_index(&root, force, index_store_path.as_deref())?;
+        }
+        Command::Concurrency { symbol } => {
+            let root = get_project_root(None);
+            let db_path = swiftgraph_core::project::db_path(&root);
+            let result = tools::concurrency::analyze_concurrency(
+                &db_path,
+                tools::concurrency::ConcurrencyParams { symbol },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Status { project } => {
             let root = get_project_root(project);

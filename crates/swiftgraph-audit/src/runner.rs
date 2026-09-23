@@ -81,6 +81,12 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
     // Collect all rules
     let mut all_rules = collect_rules(options);
     all_rules.retain(|rule| !disabled.contains(rule.id()));
+    // Migrations to APIs above the deployment target are not actionable.
+    let ios_target = rules::ios_deployment_target(project_root);
+    all_rules.retain(|rule| match (rule.min_ios_major(), ios_target) {
+        (Some(needed), Some((major, _))) => major >= needed,
+        _ => true,
+    });
     info!(
         "{} rules loaded across {} categories",
         all_rules.len(),

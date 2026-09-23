@@ -159,6 +159,11 @@ pub trait AuditRule: Send + Sync {
     fn severity(&self) -> Severity;
     /// Check a file and return findings.
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue>;
+    /// Minimum iOS major version the suggested fix needs. The rule is skipped
+    /// when the project's deployment target is known and lower.
+    fn min_ios_major(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Create a tree-sitter Swift parser.
@@ -346,4 +351,61 @@ pub fn declaration_line(node: Node, source: &str) -> u32 {
         .start_position()
         .row as u32
         + 1
+}
+
+/// Lowest iOS deployment target declared under `root`: Xcode build settings
+/// (`IPHONEOS_DEPLOYMENT_TARGET` in `*.pbxproj`), SwiftPM `platforms`
+/// (`.iOS(.v16)`, `.iOS("16.4")`) and XcodeGen `project.yml` (`iOS: "16.0"`).
+/// `None` when nothing declares one.
+pub fn ios_deployment_target(root: &std::path::Path) -> Option<(u32, u32)> {
+    static PATTERNS: std::sync::OnceLock<Option<[regex::Regex; 3]>> = std::sync::OnceLock::new();
+    let [pbx, spm, yml] = PATTERNS
+        .get_or_init(|| {
+            Some([
+                regex::Regex::new(r#"IPHONEOS_DEPLOYMENT_TARGET\s*=\s*"?(\d+)(?:\.(\d+))?"#)
+                    .ok()?,
+                regex::Regex::new(r#"\.iOS\(\s*(?:\.v(\d+)(?:_(\d+))?|"(\d+)(?:\.(\d+))?")"#)
+                    .ok()?,
+                regex::Regex::new(r#"\biOS:\s*"?(\d+)(?:\.(\d+))?"#).ok()?,
+            ])
+        })
+        .as_ref()?;
+    let mut lowest: Option<(u32, u32)> = None;
+    let mut note = |major: Option<&str>, minor: Option<&str>| {
+        let Some(major) = major.and_then(|m| m.parse::<u32>().ok()) else {
+            return;
+        };
+        let minor = minor.and_then(|m| m.parse::<u32>().ok()).unwrap_or(0);
+        if lowest.is_none_or(|l| (major, minor) < l) {
+            lowest = Some((major, minor));
+        }
+    };
+    let walker = walkdir::WalkDir::new(root).into_iter().filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        !matches!(
+            name.as_ref(),
+            ".build" | "Pods" | "DerivedData" | "node_modules" | ".git" | "Carthage"
+        )
+    });
+    for entry in walker.filter_map(Result::ok) {
+        let name = entry.file_name().to_string_lossy();
+        let re = match name.as_ref() {
+            "project.pbxproj" => pbx,
+            "Package.swift" => spm,
+            "project.yml" => yml,
+            _ => continue,
+        };
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for caps in re.captures_iter(&text) {
+            let get = |i: usize| caps.get(i).map(|m| m.as_str());
+            if get(1).is_some() {
+                note(get(1), get(2));
+            } else {
+                note(get(3), get(4));
+            }
+        }
+    }
+    lowest
 }

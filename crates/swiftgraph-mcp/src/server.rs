@@ -179,8 +179,10 @@ pub struct BoundariesToolParams {
 pub struct AuditToolParams {
     /// Comma-separated categories to check (e.g. "concurrency,memory,security,performance"). Empty = all
     pub categories: Option<String>,
-    /// Minimum severity: "low", "medium", "high", "critical" (default "low")
+    /// Minimum severity: "advisory", "low", "medium", "high", "critical" (default "low")
     pub min_severity: Option<String>,
+    /// Also report advisory findings — style suggestions hidden by default (default false)
+    pub include_advisory: Option<bool>,
     /// Filter by file path prefix (e.g. "Sources/Features/")
     pub path_filter: Option<String>,
     /// Max issues to return (default 100)
@@ -705,9 +707,13 @@ impl SwiftGraphServer {
     ) -> String {
         let project_root = self.project_root.clone();
         self.with_request_span("swiftgraph_audit", || {
+            let min_severity = match params.min_severity.as_deref() {
+                None | Some("low") if params.include_advisory.unwrap_or(false) => Some("advisory"),
+                other => other,
+            };
             let options = navigation::parse_audit_options(
                 params.categories.as_deref(),
-                params.min_severity.as_deref(),
+                min_severity,
                 params.path_filter,
                 params.max_issues,
             );

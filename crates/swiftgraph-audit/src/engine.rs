@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
+    /// Style or optimization suggestion without a concrete defect. Hidden
+    /// unless requested (`--include-advisory`, `min_severity: advisory`).
+    Advisory,
     Low,
     Medium,
     High,
@@ -14,6 +17,7 @@ impl Severity {
     /// Parse `low`, `medium`, `high` or `critical` (case-insensitive).
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "advisory" | "info" => Some(Self::Advisory),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
@@ -24,6 +28,7 @@ impl Severity {
 
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Advisory => "advisory",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
@@ -86,6 +91,8 @@ pub struct BySeverity {
     pub high: usize,
     pub medium: usize,
     pub low: usize,
+    #[serde(default)]
+    pub advisory: usize,
 }
 
 impl AuditResult {
@@ -106,6 +113,10 @@ impl AuditResult {
             low: issues
                 .iter()
                 .filter(|i| i.severity == Severity::Low)
+                .count(),
+            advisory: issues
+                .iter()
+                .filter(|i| i.severity == Severity::Advisory)
                 .count(),
         };
         Self {

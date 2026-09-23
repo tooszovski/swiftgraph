@@ -556,12 +556,10 @@ pub fn parse_audit_options(
         })
         .unwrap_or_default();
 
-    let severity = match min_severity {
-        Some("critical") => Severity::Critical,
-        Some("high") => Severity::High,
-        Some("medium") => Severity::Medium,
-        _ => Severity::Low,
-    };
+    // `advisory` also shows style suggestions hidden by default.
+    let severity = min_severity
+        .and_then(Severity::parse)
+        .unwrap_or(Severity::Low);
 
     AuditOptions {
         categories: cats,

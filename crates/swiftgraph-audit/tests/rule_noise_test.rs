@@ -35,7 +35,7 @@ fn conc001_is_low_without_async_code_and_high_with_it() {
         "final class SettingsViewModel: ObservableObject {\n    @Published var title = \"\"\n    func rename(_ t: String) { title = t }\n}\n",
     );
     assert_eq!(plain.len(), 1);
-    assert_eq!(plain[0].severity, Severity::Low);
+    assert_eq!(plain[0].severity, Severity::Advisory);
 
     let racy = check(
         &rule,
@@ -272,7 +272,7 @@ struct V: View {
 "#;
     let issues = check(&rule, source);
     let found: Vec<(u32, Severity)> = issues.iter().map(|i| (i.line, i.severity)).collect();
-    assert_eq!(found, vec![(7, Severity::Low), (11, Severity::Medium)]);
+    assert_eq!(found, vec![(7, Severity::Advisory), (11, Severity::Medium)]);
 }
 
 #[test]

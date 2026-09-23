@@ -133,7 +133,8 @@ impl AuditRule for MissingEquatable {
         Category::SwiftuiPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 1/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -196,7 +197,11 @@ impl AuditRule for StateObjectDeprecated {
         Category::SwiftuiPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -234,7 +239,7 @@ impl AuditRule for StateObjectDeprecated {
 ///
 /// `ForEach` over a literal collection of at most [`SMALL_COLLECTION`]
 /// elements (`["a", "b"]`, `0..<3`) is not reported. Outside a
-/// `ScrollView` the content cannot be long, so the finding is low; inside a
+/// `ScrollView` the content cannot be long, so the finding is advisory; inside a
 /// `ScrollView` it keeps the rule's severity.
 pub struct NonLazyList;
 
@@ -337,7 +342,8 @@ impl AuditRule for NonLazyList {
                         severity: if scrolling {
                             self.severity()
                         } else {
-                            Severity::Low
+                            // 0/15 true positives outside a ScrollView on a sampled app
+                            Severity::Advisory
                         },
                         rule: self.id().to_string(),
                         message: if scrolling {
@@ -372,7 +378,8 @@ impl AuditRule for ExpensiveInBody {
         Category::SwiftuiPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Advisory: precision 0/3 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

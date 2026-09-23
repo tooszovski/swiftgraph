@@ -197,7 +197,8 @@ impl AuditRule for AnimationLeak {
         Category::Energy
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

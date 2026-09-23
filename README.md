@@ -311,7 +311,7 @@ $ swiftgraph boundaries --config boundaries.json
 | Modernization | MOD-001..005 | ObservableObject to @Observable, NavigationView to NavigationStack |
 | Swift Performance | PERF-001..006 | Large value copies, excessive ARC, existentials in collections, actor hops in loops |
 
-Rules that depend on conventions report their confidence through severity: CONC-001 is high only when the class has asynchronous code, SUI-005 is low outside a `ScrollView`. Conformances are resolved across files, so ARCH-005 and PERF-001 see `protocol CoordinatorObject: ObservableObject` or `protocol ApiResponse: Decodable` declared elsewhere. When `max_issues` cuts the list, JSON output has `"truncated": true` and `found_issues`.
+Rules whose findings are style or optimization suggestions rather than defects have severity `advisory` and are hidden by default; `swiftgraph audit --include-advisory` (MCP `include_advisory: true`, or `--min-severity advisory`) shows them, and `audit.severity` can promote one, e.g. `{"PERF-006": "low"}`. Migrations to iOS 17 APIs (`@Observable`, two-parameter `onChange`) are skipped when the deployment target read from `*.pbxproj`, `Package.swift` or `project.yml` is lower. Rules that depend on conventions report their confidence through severity: CONC-001 is high only when the class has asynchronous code, SUI-005 is low outside a `ScrollView`. Conformances are resolved across files, so ARCH-005 and PERF-001 see `protocol CoordinatorObject: ObservableObject` or `protocol ApiResponse: Decodable` declared elsewhere. When `max_issues` cuts the list, JSON output has `"truncated": true` and `found_issues`.
 
 ### Output Formats
 

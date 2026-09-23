@@ -182,7 +182,8 @@ impl AuditRule for ManualCodingKeys {
         Category::Codable
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

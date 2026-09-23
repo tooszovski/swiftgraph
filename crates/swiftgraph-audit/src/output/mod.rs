@@ -6,12 +6,17 @@ use crate::engine::{AuditResult, Severity};
 pub fn format_text(result: &AuditResult) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "Audit: {} issues ({} critical, {} high, {} medium, {} low)\n",
+        "Audit: {} issues ({} critical, {} high, {} medium, {} low{})\n",
         result.total_issues,
         result.by_severity.critical,
         result.by_severity.high,
         result.by_severity.medium,
         result.by_severity.low,
+        if result.by_severity.advisory > 0 {
+            format!(", {} advisory", result.by_severity.advisory)
+        } else {
+            String::new()
+        },
     ));
     out.push('\n');
 
@@ -40,7 +45,7 @@ pub fn format_sarif(result: &AuditResult) -> String {
         match s {
             Severity::Critical | Severity::High => "error",
             Severity::Medium => "warning",
-            Severity::Low => "note",
+            Severity::Low | Severity::Advisory => "note",
         }
     };
 

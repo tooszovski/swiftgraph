@@ -35,7 +35,8 @@ impl AuditRule for UnnecessaryCopy {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -120,7 +121,8 @@ impl AuditRule for ExcessiveArc {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -174,7 +176,8 @@ impl AuditRule for ExistentialOverhead {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -225,7 +228,8 @@ impl AuditRule for CollectionNoReserve {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -287,7 +291,8 @@ impl AuditRule for ActorHopOverhead {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Advisory: precision 1/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -345,7 +350,8 @@ impl AuditRule for LargeValueType {
         Category::SwiftPerformance
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

@@ -10,7 +10,7 @@ use tree_sitter::Node;
 ///
 /// High when the class has asynchronous code (async/await, `Task`,
 /// `DispatchQueue`, `receive(on:)`), where state can be touched off the main
-/// thread; low otherwise — a convention question rather than a race. Projects
+/// thread; advisory otherwise — a convention question rather than a race. Projects
 /// that hop to the main actor explicitly can disable the rule or change its
 /// severity in `.swiftgraph/config.json` (`audit.disabled_rules`,
 /// `audit.severity`).
@@ -76,7 +76,7 @@ impl AuditRule for MissingMainActor {
             let (severity, note) = if has_async {
                 (self.severity(), "")
             } else {
-                (Severity::Low, " (no asynchronous code in the class)")
+                (Severity::Advisory, " (no asynchronous code in the class)")
             };
             issues.push(AuditIssue {
                 id: format!("{}:{}", self.id(), ctx.file_path),
@@ -111,7 +111,8 @@ impl AuditRule for UnsafeTaskCapture {
         Category::Concurrency
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -382,7 +383,8 @@ impl AuditRule for StoredTaskWithoutCancel {
         Category::Concurrency
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -439,7 +441,8 @@ impl AuditRule for NonisolatedMutableAccess {
         Category::Concurrency
     }
     fn severity(&self) -> Severity {
-        Severity::High
+        // Advisory: precision 0/3 on a sampled 7300-file app.
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

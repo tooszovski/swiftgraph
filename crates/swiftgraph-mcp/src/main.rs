@@ -187,9 +187,12 @@ enum Command {
         /// Comma-separated categories: concurrency, memory, security (empty = all)
         #[arg(long)]
         categories: Option<String>,
-        /// Minimum severity: low, medium, high, critical
+        /// Minimum severity: advisory, low, medium, high, critical
         #[arg(long, default_value = "low")]
         min_severity: String,
+        /// Also report advisory findings (style suggestions hidden by default)
+        #[arg(long)]
+        include_advisory: bool,
         /// Filter by file path prefix
         #[arg(long)]
         path: Option<String>,
@@ -400,11 +403,17 @@ async fn main() -> Result<()> {
         Command::Audit {
             categories,
             min_severity,
+            include_advisory,
             path,
             format,
             max_issues,
         } => {
             let root = get_project_root(None);
+            let min_severity = if include_advisory && min_severity == "low" {
+                "advisory".to_string()
+            } else {
+                min_severity
+            };
             let options = tools::navigation::parse_audit_options(
                 categories.as_deref(),
                 Some(min_severity.as_str()),

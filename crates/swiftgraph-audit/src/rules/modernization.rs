@@ -17,7 +17,11 @@ impl AuditRule for ObservableObjectMigration {
         Category::Modernization
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -69,7 +73,11 @@ impl AuditRule for StateObjectMigration {
         Category::Modernization
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -117,7 +125,11 @@ impl AuditRule for ObservedObjectMigration {
         Category::Modernization
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
@@ -168,7 +180,11 @@ impl AuditRule for DeprecatedOnChange {
         Category::Modernization
     }
     fn severity(&self) -> Severity {
-        Severity::Low
+        // Advisory: precision 0/15 on a sampled 7300-file app.
+        Severity::Advisory
+    }
+    fn min_ios_major(&self) -> Option<u32> {
+        Some(17)
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

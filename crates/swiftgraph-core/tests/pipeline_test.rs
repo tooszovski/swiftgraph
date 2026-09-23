@@ -151,3 +151,49 @@ fn legacy_database_is_rebuilt_with_current_schema() {
     assert_eq!(count(&conn, "SELECT COUNT(*) FROM nodes"), 0);
     fts_ok(&conn);
 }
+
+/// Call edges from unchanged files into a changed file must point at the
+/// changed file's current node IDs (IDs contain line numbers).
+#[test]
+fn incremental_reindex_refreshes_incoming_edges() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("db.sqlite");
+    let a = dir.path().join("Service.swift");
+    std::fs::write(&a, "final class Service {\n    func run() {}\n}\n").unwrap();
+    std::fs::write(
+        dir.path().join("Client.swift"),
+        "func use(service: Service) {\n    service.run()\n    service.stop()\n}\n",
+    )
+    .unwrap();
+    index(&db, dir.path());
+
+    let dangling = |conn: &rusqlite::Connection| {
+        count(
+            conn,
+            "SELECT COUNT(*) FROM edges e WHERE e.kind = 'calls' AND NOT EXISTS (SELECT 1 FROM nodes n WHERE n.id = e.target)",
+        )
+    };
+    let callee = |conn: &rusqlite::Connection, name: &str| {
+        count(
+            conn,
+            &format!("SELECT COUNT(*) FROM edges e JOIN nodes n ON n.id = e.target WHERE e.kind = 'calls' AND n.name = '{name}' AND e.file LIKE '%Client.swift'"),
+        )
+    };
+    let conn = storage::open_db(&db).unwrap();
+    assert_eq!(callee(&conn, "run"), 1);
+    assert_eq!(callee(&conn, "stop"), 0);
+    drop(conn);
+
+    // `run` moves down a line and `stop` appears; Client.swift is unchanged.
+    std::fs::write(
+        &a,
+        "final class Service {\n    // moved\n    func run() {}\n    func stop() {}\n}\n",
+    )
+    .unwrap();
+    index(&db, dir.path());
+
+    let conn = storage::open_db(&db).unwrap();
+    assert_eq!(dangling(&conn), 0);
+    assert_eq!(callee(&conn, "run"), 1);
+    assert_eq!(callee(&conn, "stop"), 1);
+}

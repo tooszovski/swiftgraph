@@ -233,7 +233,9 @@ pub fn index_directory_with_options(
     let files_for_treesitter_empty = files_for_treesitter.is_empty();
 
     // Filter by hash for incremental reindex
-    let files_to_index: Vec<_> = if force {
+    let candidates: std::collections::HashSet<std::path::PathBuf> =
+        files_for_treesitter.iter().cloned().collect();
+    let mut files_to_index: Vec<_> = if force {
         files_for_treesitter
     } else {
         files_for_treesitter
@@ -256,17 +258,62 @@ pub fn index_directory_with_options(
             .collect()
     };
 
+    // Unchanged files whose call edges point into changed files must be
+    // resolved again: node IDs contain line numbers.
+    let old_names = if force {
+        std::collections::HashSet::new()
+    } else {
+        let (dependents, names) = incoming_dependents(&conn, &files_to_index)?;
+        files_to_index.extend(dependents.into_iter().filter(|p| candidates.contains(p)));
+        names
+    };
+
+    let parse = |paths: &[std::path::PathBuf]| -> Vec<_> {
+        paths
+            .par_iter()
+            .filter_map(|path| {
+                let mut parser = TreeSitterParser::new().ok()?;
+                let result = parser.parse_file(path).ok()?;
+                let content = std::fs::read(path).ok()?;
+                let hash = format!("{:x}", Sha256::digest(&content));
+                Some((path.clone(), hash, result))
+            })
+            .collect()
+    };
+
     // Parse files in parallel with tree-sitter
-    let parse_results: Vec<_> = files_to_index
-        .par_iter()
-        .filter_map(|path| {
-            let mut parser = TreeSitterParser::new().ok()?;
-            let result = parser.parse_file(path).ok()?;
-            let content = std::fs::read(path).ok()?;
-            let hash = format!("{:x}", Sha256::digest(&content));
-            Some((path.clone(), hash, result))
-        })
-        .collect();
+    let mut parse_results: Vec<_> = parse(&files_to_index);
+
+    // Declarations that did not exist before may be the targets of calls
+    // that found nothing; files that mention those names resolve again.
+    if !force && !parse_results.is_empty() {
+        let new_names: std::collections::BTreeSet<&str> = parse_results
+            .iter()
+            .flat_map(|(_, _, r)| r.nodes.iter().map(|n| n.name.as_str()))
+            .filter(|n| !old_names.contains(*n))
+            .collect();
+        let parsed: std::collections::HashSet<&std::path::PathBuf> =
+            parse_results.iter().map(|(p, _, _)| p).collect();
+        let mut more = Vec::new();
+        let mut stmt = conn.prepare("SELECT DISTINCT file FROM name_refs WHERE name = ?1")?;
+        for name in new_names {
+            for file in stmt.query_map([name], |r| r.get::<_, String>(0))? {
+                let path = std::path::PathBuf::from(file?);
+                if candidates.contains(&path) && !parsed.contains(&path) && !more.contains(&path) {
+                    more.push(path);
+                }
+            }
+        }
+        drop(stmt);
+        if !more.is_empty() {
+            debug!(
+                "re-resolving {} files that mention new declarations",
+                more.len()
+            );
+            let extra = parse(&more);
+            parse_results.extend(extra);
+        }
+    }
 
     // Store tree-sitter results in a single transaction
     let ts_files_indexed = parse_results.len();
@@ -417,6 +464,43 @@ fn purge_missing_files(
         purged += 1;
     }
     Ok(purged)
+}
+
+/// Files (other than `changed`) with call edges into declarations of
+/// `changed`, and the names currently declared in `changed`.
+fn incoming_dependents(
+    conn: &rusqlite::Connection,
+    changed: &[std::path::PathBuf],
+) -> Result<(Vec<std::path::PathBuf>, std::collections::HashSet<String>), PipelineError> {
+    let mut dependents = std::collections::BTreeSet::new();
+    let mut names = std::collections::HashSet::new();
+    let changed_set: std::collections::HashSet<String> = changed
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    let mut edges = conn.prepare(
+        "SELECT DISTINCT e.file FROM edges e JOIN nodes n ON n.id = e.target
+         WHERE n.file = ?1 AND e.kind = 'calls' AND e.file IS NOT NULL AND e.file != ?1",
+    )?;
+    let mut declared = conn.prepare("SELECT DISTINCT name FROM nodes WHERE file = ?1")?;
+    for file in &changed_set {
+        for row in edges.query_map([file], |r| r.get::<_, String>(0))? {
+            let row = row?;
+            if !changed_set.contains(&row) {
+                dependents.insert(row);
+            }
+        }
+        for row in declared.query_map([file], |r| r.get::<_, String>(0))? {
+            names.insert(row?);
+        }
+    }
+    Ok((
+        dependents
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+        names,
+    ))
 }
 
 /// Counters of [`resolve_calls`].

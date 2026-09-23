@@ -323,8 +323,8 @@ pub fn index_directory_with_options(
     let calls = resolve_calls(&conn, &parse_results, &config.resolution)?;
     if calls.edges > 0 || calls.unresolved > 0 {
         info!(
-            "Resolved calls: {} edges ({} ambiguous), {} call sites without a confident target",
-            calls.edges, calls.ambiguous, calls.unresolved
+            "Resolved calls: {} edges ({} ambiguous), {} call sites without a confident target; {} of {} call sites have an unknown receiver",
+            calls.edges, calls.ambiguous, calls.unresolved, calls.unknown_receiver, calls.sites
         );
     }
     edges_added += calls.edges;
@@ -425,6 +425,10 @@ struct CallStats {
     edges: usize,
     ambiguous: usize,
     unresolved: usize,
+    /// Call sites seen.
+    sites: usize,
+    /// Call sites whose receiver type is unknown.
+    unknown_receiver: usize,
 }
 
 /// Turn the call sites of freshly parsed files into `calls` edges.
@@ -465,6 +469,10 @@ fn resolve_calls(
             }
         }
         for call in parsed.iter().flat_map(|(_, _, r)| &r.calls) {
+            stats.sites += 1;
+            if call.receiver == crate::tree_sitter::parser::Receiver::Unknown {
+                stats.unknown_receiver += 1;
+            }
             let (targets, ambiguous) = match resolver.resolve(call) {
                 resolve::Resolution::Confident(t) => (t, false),
                 resolve::Resolution::Ambiguous(t) => (t, true),

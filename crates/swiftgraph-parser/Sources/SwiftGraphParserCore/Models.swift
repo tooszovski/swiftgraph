@@ -12,7 +12,7 @@ public enum ParserProtocol {
     /// Bumped on any incompatible change of the JSON shapes below.
     public static let version = 2
     /// Informational parser version.
-    public static let parserVersion = "0.5.1"
+    public static let parserVersion = "0.5.2"
 }
 
 /// Reply to `--version`.

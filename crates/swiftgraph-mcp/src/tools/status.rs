@@ -42,7 +42,7 @@ pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
     };
     let index_store_path = project::resolve_index_store(project_root);
 
-    let db_path = project_root.join(".swiftgraph/db.sqlite");
+    let db_path = swiftgraph_core::project::db_path(project_root);
     let (files, nodes, edges, index_strategy) = if db_path.exists() {
         let conn = storage::open_db(&db_path)?;
         let stats = queries::get_stats(&conn)?;

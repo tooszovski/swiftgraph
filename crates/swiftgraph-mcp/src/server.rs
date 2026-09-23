@@ -222,7 +222,7 @@ const CACHE_CAPACITY: std::num::NonZeroUsize = match std::num::NonZeroUsize::new
 impl SwiftGraphServer {
     /// Create a new server for the given project root.
     pub fn new(project_root: PathBuf) -> Self {
-        let db_path = project_root.join(".swiftgraph/db.sqlite");
+        let db_path = swiftgraph_core::project::db_path(&project_root);
         Self {
             project_root,
             tool_router: Self::tool_router(),

@@ -399,3 +399,16 @@ mod index_store_resolution_tests {
         assert!(resolve_index_store(dir.path()).is_none());
     }
 }
+
+/// Environment variable overriding the database location.
+pub const DB_ENV: &str = "SWIFTGRAPH_DB";
+
+/// Database path for a project: `$SWIFTGRAPH_DB` if set, otherwise
+/// `<root>/.swiftgraph/db.sqlite`. The override lets several indexes of one
+/// source tree coexist (e.g. a read-only checkout or a running server).
+pub fn db_path(root: &Path) -> PathBuf {
+    match std::env::var_os(DB_ENV).filter(|v| !v.is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => root.join(".swiftgraph/db.sqlite"),
+    }
+}

@@ -57,3 +57,23 @@ fn audit_text_says_how_many_findings_were_cut() {
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(text.contains("truncated, 7 more"), "{text}");
 }
+
+#[test]
+fn database_location_can_be_overridden() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("A.swift"), "struct A {}\n").unwrap();
+    let db = dir.path().join("elsewhere/index.sqlite");
+    let out = swiftgraph()
+        .args(["index", "--project", "."])
+        .env("SWIFTGRAPH_DB", &db)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(db.is_file());
+    assert!(!dir.path().join(".swiftgraph/db.sqlite").exists());
+}

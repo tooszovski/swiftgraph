@@ -245,7 +245,7 @@ async fn main() -> Result<()> {
         }
         Command::Search { query, kind, limit } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::SearchParams {
                 query,
                 kind,
@@ -256,7 +256,7 @@ async fn main() -> Result<()> {
         }
         Command::Callers { symbol, limit } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::CallersParams {
                 symbol,
                 limit: Some(limit),
@@ -266,7 +266,7 @@ async fn main() -> Result<()> {
         }
         Command::Callees { symbol, limit } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::CallersParams {
                 symbol,
                 limit: Some(limit),
@@ -278,7 +278,7 @@ async fn main() -> Result<()> {
             symbol, direction, ..
         } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::HierarchyParams {
                 symbol,
                 direction: Some(direction),
@@ -293,7 +293,7 @@ async fn main() -> Result<()> {
             include_tests,
         } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::ContextParams {
                 task,
                 max_nodes: Some(max_nodes),
@@ -304,7 +304,7 @@ async fn main() -> Result<()> {
         }
         Command::Impact { symbol, depth } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::ImpactParams {
                 symbol,
                 depth: Some(depth),
@@ -314,7 +314,7 @@ async fn main() -> Result<()> {
         }
         Command::DiffImpact { git_ref } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let params = tools::navigation::DiffImpactParams {
                 git_ref: Some(git_ref),
             };
@@ -328,7 +328,7 @@ async fn main() -> Result<()> {
             include_tests,
         } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result = tools::navigation::get_complexity(
                 &db_path,
                 path.as_deref(),
@@ -344,7 +344,7 @@ async fn main() -> Result<()> {
             limit,
         } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result = tools::navigation::get_dead_code(
                 &db_path,
                 path.as_deref(),
@@ -359,7 +359,7 @@ async fn main() -> Result<()> {
             include_tests,
         } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result = tools::navigation::get_cycles(
                 &db_path,
                 path.as_deref(),
@@ -374,26 +374,26 @@ async fn main() -> Result<()> {
         }
         Command::Coupling { depth, source_root } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result =
                 tools::navigation::get_coupling(&db_path, Some(depth), source_root.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Architecture { expected } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result = tools::navigation::get_architecture(&db_path, expected.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Imports { path } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let result = tools::navigation::get_imports(&db_path, path.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Command::Boundaries { config } => {
             let root = get_project_root(None);
-            let db_path = root.join(".swiftgraph/db.sqlite");
+            let db_path = swiftgraph_core::project::db_path(&root);
             let config_str = std::fs::read_to_string(&config).map_err(|e| {
                 anyhow::anyhow!("failed to read boundary config {}: {e}", config.display())
             })?;
@@ -467,7 +467,7 @@ fn cmd_init(root: &Path) -> Result<()> {
 }
 
 fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Result<()> {
-    let db_path = root.join(".swiftgraph/db.sqlite");
+    let db_path = swiftgraph_core::project::db_path(root);
     eprintln!("Indexing {}...", root.display());
 
     // CLI flag wins, then config.json `index_store_path`, then auto-detection
@@ -503,7 +503,7 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
 }
 
 fn cmd_watch(root: &Path, debounce_secs: u64) -> Result<()> {
-    let db_path = root.join(".swiftgraph/db.sqlite");
+    let db_path = swiftgraph_core::project::db_path(root);
 
     // Initial index
     eprintln!("Initial indexing {}...", root.display());

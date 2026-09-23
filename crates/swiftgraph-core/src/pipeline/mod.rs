@@ -219,12 +219,8 @@ pub fn index_directory_with_options(
 
     // Only project sources: the store also describes SPM checkouts,
     // DerivedSources and files excluded by the config.
-    let store_data = store_data.map(|(path, data)| {
-        (
-            path,
-            restrict_to_project(data, source_root, &config, &include_set, &exclude_set),
-        )
-    });
+    let store_data =
+        store_data.map(|(path, data)| (path, restrict_to_project(data, &scanned_paths)));
 
     if let Some((_, data)) = &store_data {
         match write_index_store(&conn, data) {
@@ -524,20 +520,15 @@ fn stitch_index_store_nodes(
     Ok(stitched)
 }
 
-/// Drop Index Store symbols and relations of files outside `root` or
-/// excluded by the config (including generated sources).
+/// Keep Index Store symbols and relations only for `scanned` files: the
+/// project's sources on disk that pass include/exclude (and the generated
+/// code filter). Drops dependencies, DerivedSources and files deleted since
+/// the last build.
 fn restrict_to_project(
     mut data: reader::IndexStoreData,
-    root: &Path,
-    config: &Config,
-    include_set: &Option<globset::GlobSet>,
-    exclude_set: &globset::GlobSet,
+    scanned: &std::collections::HashSet<String>,
 ) -> reader::IndexStoreData {
-    let keep = |file: &str| {
-        Path::new(file)
-            .strip_prefix(root)
-            .is_ok_and(|relative| config.should_include(relative, include_set, exclude_set))
-    };
+    let keep = |file: &str| scanned.contains(file);
     data.nodes.retain(|n| keep(&n.location.file));
     let kept: std::collections::HashSet<&str> = data.nodes.iter().map(|n| n.id.as_str()).collect();
     data.edges.retain(|e| match &e.location {
@@ -946,7 +937,6 @@ mod tests {
 
     #[test]
     fn index_store_data_is_restricted_to_project_sources() {
-        let root = Path::new("/p/ios");
         let files = [
             ("app", "/p/ios/App/Feature.swift"),
             (
@@ -958,6 +948,7 @@ mod tests {
                 "/p/ios/Build/DerivedSources/GeneratedStringSymbols_Localizable.swift",
             ),
             ("pods", "/p/ios/Pods/X/Y.swift"),
+            ("deleted", "/p/ios/App/DeletedSinceBuild.swift"),
         ];
         let mut data = reader::IndexStoreData::default();
         for (id, file) in files {
@@ -972,14 +963,11 @@ mod tests {
             "app",
             "/Users/me/DerivedData/SourcePackages/checkouts/Snap/Diff.swift",
         ));
-        let config = Config::default();
-        let data = restrict_to_project(
-            data,
-            root,
-            &config,
-            &config.include_globset(),
-            &config.exclude_globset(),
-        );
+        // What the scan found on disk under the root after include/exclude
+        let scanned: std::collections::HashSet<String> = ["/p/ios/App/Feature.swift".to_string()]
+            .into_iter()
+            .collect();
+        let data = restrict_to_project(data, &scanned);
         let ids: Vec<&str> = data.nodes.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, vec!["app"]);
         // Calls from project code to dependencies stay (external targets)

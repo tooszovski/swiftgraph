@@ -54,6 +54,25 @@ pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
     Ok(())
 }
 
+/// Read a value from the `meta` key/value table.
+pub fn get_meta(conn: &Connection, key: &str) -> SqlResult<Option<String>> {
+    use rusqlite::OptionalExtension;
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+    .optional()
+}
+
+/// Write a value to the `meta` key/value table.
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 /// Upsert a file record.
 pub fn upsert_file(conn: &Connection, path: &str, hash: &str, symbol_count: u32) -> SqlResult<()> {
     conn.execute(

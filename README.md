@@ -327,7 +327,7 @@ If the Xcode project or `Package.swift` is not in the root (for example, it live
 SwiftGraph works in two modes:
 
 - **tree-sitter only** (default) — no build required, parses Swift source directly. Captures declarations, call edges, conformances, extensions.
-- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. `index_store_path` accepts `"auto"` (default: `.build/index/store` for SwiftPM, `~/Library/Developer/Xcode/DerivedData/<Project>-*/Index.noindex/DataStore` for Xcode), `"none"` to force tree-sitter only, or an explicit path (relative to the project root). `swiftgraph index --index-store-path` overrides it.
+- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. `index_store_path` accepts `"auto"` (default: `.build/index/store` for SwiftPM, `~/Library/Developer/Xcode/DerivedData/<Project>-*/Index.noindex/DataStore` for Xcode), `"none"` to force tree-sitter only, or an explicit path (relative to the project root). `swiftgraph index --index-store-path` overrides it. `swiftgraph index`, `swiftgraph watch` and the `swiftgraph_reindex` tool all use the same resolution. The backend used by the last run is reported by `swiftgraph_status` as `indexStrategy` (`index-store`, `hybrid` or `tree-sitter`); switching backends triggers a full rebuild so tree-sitter and Index Store symbol IDs never mix.
 
 ## Architecture
 

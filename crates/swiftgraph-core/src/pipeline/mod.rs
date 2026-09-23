@@ -46,19 +46,44 @@ pub enum IndexStrategy {
     Hybrid,
 }
 
+impl IndexStrategy {
+    /// Stable string form, stored in the `meta` table and shown by `status`.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::IndexStore => "index-store",
+            Self::TreeSitter => "tree-sitter",
+            Self::Hybrid => "hybrid",
+        }
+    }
+
+    /// Whether Index Store data contributed to the graph.
+    pub fn uses_index_store(&self) -> bool {
+        matches!(self, Self::IndexStore | Self::Hybrid)
+    }
+}
+
+/// `meta` key holding the [`IndexStrategy`] of the last indexing run.
+pub const META_INDEX_STRATEGY: &str = "index_strategy";
+/// `meta` key identifying the backend data source (`tree-sitter` or
+/// `index-store:<path>`). A change forces a full rebuild so USR-based and
+/// `ts::`-based node IDs never mix in one database.
+pub const META_INDEX_SOURCE: &str = "index_source";
+
 /// Index all Swift files in the given directory.
 ///
-/// Tries Index Store first (if `index_store_path` is provided or auto-detected),
-/// then falls back to tree-sitter for any remaining files.
+/// The Index Store is resolved with [`crate::project::resolve_index_store`]
+/// (config `index_store_path`, then auto-detection); files it does not cover
+/// fall back to tree-sitter.
 pub fn index_directory(
     db_path: &Path,
     source_root: &Path,
     force: bool,
 ) -> Result<IndexResult, PipelineError> {
-    index_directory_with_store(db_path, source_root, force, None)
+    let store = crate::project::resolve_index_store(source_root);
+    index_directory_with_store(db_path, source_root, force, store.as_deref())
 }
 
-/// Index with an explicit Index Store path.
+/// Index with an explicit Index Store path (`None` = tree-sitter only).
 pub fn index_directory_with_store(
     db_path: &Path,
     source_root: &Path,
@@ -66,7 +91,40 @@ pub fn index_directory_with_store(
     index_store_path: Option<&Path>,
 ) -> Result<IndexResult, PipelineError> {
     let _span = info_span!("index_directory", root = %source_root.display()).entered();
+    // Index Store paths are absolute; canonicalize so tree-sitter paths match them.
+    let canonical_root = source_root
+        .canonicalize()
+        .unwrap_or_else(|_| source_root.to_path_buf());
+    let source_root = canonical_root.as_path();
     let conn = storage::open_db(db_path)?;
+
+    // Read the Index Store up front so we know which backend this run uses.
+    let store_data = index_store_path.and_then(|store_path| {
+        match IndexStoreLib::load()
+            .map_err(|e| e.to_string())
+            .and_then(|lib| reader::read_index_store(&lib, store_path).map_err(|e| e.to_string()))
+        {
+            Ok(data) => Some((store_path, data)),
+            Err(e) => {
+                warn!("Index Store unavailable, falling back to tree-sitter: {e}");
+                None
+            }
+        }
+    });
+
+    let source = match &store_data {
+        Some((p, _)) => format!("index-store:{}", p.display()),
+        None => "tree-sitter".to_string(),
+    };
+    let previous_source = queries::get_meta(&conn, META_INDEX_SOURCE)?;
+    let force = force
+        || match previous_source.as_deref() {
+            Some(prev) if prev != source => {
+                info!("Index backend changed ({prev} -> {source}), rebuilding database");
+                true
+            }
+            _ => false,
+        };
 
     // On force reindex, rebuild FTS content sync to avoid corruption
     if force {
@@ -105,8 +163,8 @@ pub fn index_directory_with_store(
     let mut edges_added = 0;
     let mut used_index_store = false;
 
-    if let Some(store_path) = index_store_path.or_else(|| auto_detect_index_store(source_root)) {
-        match try_index_store(&conn, store_path, force) {
+    if let Some((_, data)) = &store_data {
+        match write_index_store(&conn, data) {
             Ok((n, e, files)) => {
                 nodes_added = n;
                 edges_added = e;
@@ -120,7 +178,7 @@ pub fn index_directory_with_store(
                 );
             }
             Err(e) => {
-                warn!("Index Store unavailable, falling back to tree-sitter: {e}");
+                warn!("Failed to store Index Store data, falling back to tree-sitter: {e}");
             }
         }
     }
@@ -134,6 +192,7 @@ pub fn index_directory_with_store(
     } else {
         swift_files
     };
+    let files_for_treesitter_empty = files_for_treesitter.is_empty();
 
     // Filter by hash for incremental reindex
     let files_to_index: Vec<_> = if force {
@@ -215,11 +274,19 @@ pub fn index_directory_with_store(
     }
 
     let files_indexed = index_store_files.len() + ts_files_indexed;
-    let strategy = match (used_index_store, ts_files_indexed > 0) {
+    let ts_files_present = !files_for_treesitter_empty;
+    let strategy = match (used_index_store, ts_files_present) {
         (true, true) => IndexStrategy::Hybrid,
         (true, false) => IndexStrategy::IndexStore,
         _ => IndexStrategy::TreeSitter,
     };
+    let recorded_source = if used_index_store {
+        source.as_str()
+    } else {
+        "tree-sitter"
+    };
+    queries::set_meta(&conn, META_INDEX_SOURCE, recorded_source)?;
+    queries::set_meta(&conn, META_INDEX_STRATEGY, strategy.as_str())?;
 
     debug!(
         "Indexing complete ({strategy:?}): {files_indexed} files, {nodes_added} nodes, {edges_added} edges"
@@ -234,16 +301,12 @@ pub fn index_directory_with_store(
     })
 }
 
-/// Try to read data from Index Store and write to the database.
+/// Write Index Store data to the database.
 /// Returns (nodes_added, edges_added, set of file paths covered).
-fn try_index_store(
+fn write_index_store(
     conn: &rusqlite::Connection,
-    store_path: &Path,
-    _force: bool,
-) -> Result<(usize, usize, std::collections::HashSet<String>), Box<dyn std::error::Error>> {
-    let lib = IndexStoreLib::load()?;
-    let data = reader::read_index_store(&lib, store_path)?;
-
+    data: &reader::IndexStoreData,
+) -> Result<(usize, usize, std::collections::HashSet<String>), PipelineError> {
     let mut nodes_added = 0;
     let mut edges_added = 0;
 
@@ -448,13 +511,4 @@ fn enrich_with_swift_syntax(
     }
 
     Ok(enriched_count)
-}
-
-/// Try to auto-detect the Index Store path from DerivedData.
-fn auto_detect_index_store(source_root: &Path) -> Option<&Path> {
-    // For now, rely on project detection to provide this.
-    // The `project::detect_project` already finds the Index Store path.
-    // This will be wired up when called from the CLI/MCP.
-    let _ = source_root;
-    None
 }

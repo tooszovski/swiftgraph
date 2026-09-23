@@ -152,6 +152,41 @@ fn detect_in_dir(dir: &Path) -> Option<ProjectInfo> {
     None
 }
 
+/// Locate a SwiftPM Index Store under `root/.build`.
+///
+/// Checks the explicit `-index-store-path .build/index/store` location first,
+/// then SwiftPM's own `.build/<triple>/{debug,release}/index/store`, picking
+/// the most recently modified one.
+fn find_spm_index_store(root: &Path) -> Option<PathBuf> {
+    let build = root.join(".build");
+    let explicit = build.join("index/store");
+    if explicit.is_dir() {
+        return Some(explicit);
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    for config in ["debug", "release"] {
+        candidates.push(build.join(config).join("index/store"));
+    }
+    if let Ok(entries) = std::fs::read_dir(&build) {
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                for config in ["debug", "release"] {
+                    candidates.push(entry.path().join(config).join("index/store"));
+                }
+            }
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|p| p.is_dir())
+        .filter_map(|p| {
+            let modified = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
+            Some((modified, p.canonicalize().unwrap_or(p)))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)))
+        .map(|(_, p)| p)
+}
+
 /// Subdirectories of `dir` worth searching, in a stable (sorted) order.
 fn sorted_subdirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -216,10 +251,7 @@ fn make_info(root: &Path, project_type: ProjectType) -> ProjectInfo {
         .unwrap_or(dir_name);
 
     let index_store_path = match project_type {
-        ProjectType::Spm => {
-            let p = root.join(".build/index/store");
-            p.is_dir().then_some(p)
-        }
+        ProjectType::Spm => find_spm_index_store(root),
         ProjectType::Xcode
         | ProjectType::XcodeWorkspace
         | ProjectType::XcodeGen

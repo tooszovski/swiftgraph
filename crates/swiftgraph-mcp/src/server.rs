@@ -291,7 +291,8 @@ impl SwiftGraphServer {
                         "files_scanned": result.files_scanned,
                         "files_indexed": result.files_indexed,
                         "nodes_added": result.nodes_added,
-                        "edges_added": result.edges_added
+                        "edges_added": result.edges_added,
+                        "strategy": result.strategy.as_str()
                     })
                     .to_string()
                 }

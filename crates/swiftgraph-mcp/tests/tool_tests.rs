@@ -369,3 +369,21 @@ fn status_finds_project_in_subdirectory() {
     assert_eq!(resp.project_type, "xcode");
     assert_eq!(resp.project_name, "Shop");
 }
+
+#[test]
+fn status_mode_reflects_how_the_db_was_built() {
+    use swiftgraph_mcp::tools::status;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Package.swift"), "").unwrap();
+    std::fs::create_dir_all(dir.path().join("Sources")).unwrap();
+    std::fs::write(dir.path().join("Sources/A.swift"), "struct A {}").unwrap();
+    // A store directory exists but the DB was built with tree-sitter only.
+    std::fs::create_dir_all(dir.path().join(".build/index/store")).unwrap();
+    let db = dir.path().join(".swiftgraph/db.sqlite");
+    swiftgraph_core::pipeline::index_directory_with_store(&db, dir.path(), false, None).unwrap();
+
+    let resp = status::get_status(dir.path()).unwrap();
+    assert!(resp.index_store_available);
+    assert_eq!(resp.mode, "tree-sitter");
+    assert_eq!(resp.index_strategy.as_deref(), Some("tree-sitter"));
+}

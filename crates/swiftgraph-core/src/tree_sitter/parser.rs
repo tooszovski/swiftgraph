@@ -79,7 +79,11 @@ fn visit_node(
     container: Option<Container>,
     result: &mut ParseResult,
 ) {
-    if let Some(symbol_kind) = map_node_kind(&node, source) {
+    // Local variables (inside a function, accessor or closure) are not
+    // declarations of the program's structure: no node, no FTS row.
+    let local_variable =
+        node.kind() == "property_declaration" && container.is_some_and(|c| c.type_path.is_none());
+    if let Some(symbol_kind) = map_node_kind(&node, source).filter(|_| !local_variable) {
         if let Some(name) = extract_name(&node, source) {
             let id = make_synthetic_id(file_path, &name, node.start_position().row);
             let is_type = matches!(
@@ -1032,6 +1036,30 @@ mod tests {
             .iter()
             .any(|a| a == "@Published"));
         assert_eq!(find(&r, "name").kind, SymbolKind::Property);
+    }
+
+    #[test]
+    fn local_variables_are_not_declarations() {
+        let r = parse(
+            "let globalValue = 1\n\
+             struct S {\n\
+                 let member = 2\n\
+                 var body: Int { let inBody = 3; return inBody }\n\
+                 func run() {\n\
+                     let local = 4\n\
+                     var counter: Int = 0\n\
+                     items.forEach { item in let inClosure = item }\n\
+                     func nested() {}\n\
+                 }\n\
+             }\n",
+        );
+        let names: Vec<&str> = r.nodes.iter().map(|n| n.name.as_str()).collect();
+        for kept in ["globalValue", "S", "member", "body", "run", "nested"] {
+            assert!(names.contains(&kept), "{kept} missing: {names:?}");
+        }
+        for local in ["inBody", "local", "counter", "inClosure"] {
+            assert!(!names.contains(&local), "{local} is a node: {names:?}");
+        }
     }
 
     #[test]

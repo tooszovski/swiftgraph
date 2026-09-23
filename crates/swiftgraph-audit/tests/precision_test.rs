@@ -406,15 +406,13 @@ final class ProfileService {
     }
 }
 "#;
+    // A type-safety suggestion: advisory everywhere, shown with --include-advisory
     let found: Vec<(u32, Severity)> = found(&check(&rule, source));
     assert_eq!(
-        found
-            .iter()
-            .filter(|(_, s)| *s != Severity::Advisory)
-            .map(|(l, _)| *l)
-            .collect::<Vec<_>>(),
-        vec![16]
+        found.iter().map(|(l, _)| *l).collect::<Vec<_>>(),
+        vec![4, 10, 16]
     );
+    assert!(found.iter().all(|(_, s)| *s == Severity::Advisory));
 }
 
 #[test]

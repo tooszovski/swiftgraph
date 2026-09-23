@@ -17,7 +17,8 @@ impl AuditRule for ManualJsonBuilding {
         Category::Codable
     }
     fn severity(&self) -> Severity {
-        Severity::Medium
+        // Advisory: a type-safety suggestion, not a defect (17-project rerun)
+        Severity::Advisory
     }
 
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {

@@ -11,6 +11,17 @@ pub enum Severity {
 }
 
 impl Severity {
+    /// Parse `low`, `medium`, `high` or `critical` (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Low => "low",
@@ -57,7 +68,14 @@ pub struct AuditIssue {
 /// Result of running an audit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditResult {
+    /// Issues returned (after the `max_issues` cap).
     pub total_issues: usize,
+    /// Issues found before the `max_issues` cap.
+    #[serde(default)]
+    pub found_issues: usize,
+    /// Some findings were dropped by the `max_issues` cap.
+    #[serde(default)]
+    pub truncated: bool,
     pub by_severity: BySeverity,
     pub issues: Vec<AuditIssue>,
 }
@@ -92,6 +110,8 @@ impl AuditResult {
         };
         Self {
             total_issues: issues.len(),
+            found_issues: issues.len(),
+            truncated: false,
             by_severity,
             issues,
         }

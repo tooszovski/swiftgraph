@@ -4,7 +4,25 @@ use crate::engine::{AuditIssue, Category, Severity};
 use crate::rules::{find_descendants, node_text, AuditRule, FileContext};
 
 /// PERF-001: Unnecessary copy — large struct (>3 stored properties) without borrowing/consuming.
+///
+/// Codable DTOs are skipped (directly or through a project protocol): they
+/// are decoded once and passed around as data. So are SwiftUI views and
+/// styles, which the framework recreates and copies by design.
 pub struct UnnecessaryCopy;
+
+/// Conformances whose structs are not candidates for ownership modifiers.
+const SKIPPED_CONFORMANCES: &[&str] = &[
+    "Codable",
+    "Decodable",
+    "Encodable",
+    "View",
+    "ViewModifier",
+    "Shape",
+    "ButtonStyle",
+    "PrimitiveButtonStyle",
+    "LabelStyle",
+    "ToggleStyle",
+];
 
 impl AuditRule for UnnecessaryCopy {
     fn id(&self) -> &str {
@@ -25,15 +43,20 @@ impl AuditRule for UnnecessaryCopy {
         let mut issues = Vec::new();
 
         // Find struct declarations
-        let structs = find_descendants(root, ctx.source, &|node, _src| {
-            node.kind() == "class_declaration"
-                && node
-                    .child(0)
-                    .and_then(|c| c.utf8_text(ctx.source.as_bytes()).ok())
-                    == Some("struct")
+        // The keyword follows `modifiers`, so it is not always the first child.
+        let structs = find_descendants(root, ctx.source, &|node, src| {
+            node.kind() == "class_declaration" && crate::rules::class_keyword(node, src) == "struct"
         });
 
         for struct_node in structs {
+            let conformances = crate::rules::inheritance_names(struct_node, ctx.source);
+            if conformances.iter().any(|c| {
+                SKIPPED_CONFORMANCES
+                    .iter()
+                    .any(|skipped| ctx.project.inherits(c, skipped))
+            }) {
+                continue;
+            }
             // Count stored properties (var/let declarations inside the struct body)
             let props = find_descendants(struct_node, ctx.source, &|node, _src| {
                 node.kind() == "property_declaration"

@@ -232,6 +232,10 @@ impl AuditRule for TooManyStateProperties {
 }
 
 /// ARCH-005: @Published property in non-ObservableObject class.
+///
+/// Conformance may be indirect: through a project protocol
+/// (`protocol CoordinatorObject: ObservableObject`), a superclass, or an
+/// extension in another file.
 pub struct PublishedWithoutObservable;
 
 impl AuditRule for PublishedWithoutObservable {
@@ -262,8 +266,12 @@ impl AuditRule for PublishedWithoutObservable {
                 continue;
             }
 
-            let text = node_text(decl, ctx.source);
-            if text.contains("ObservableObject") {
+            let observable = |name: &str| ctx.project.inherits(name, "ObservableObject");
+            if crate::rules::inheritance_names(decl, ctx.source)
+                .iter()
+                .any(|n| observable(n))
+                || crate::rules::decl_name(decl, ctx.source).is_some_and(|n| observable(&n))
+            {
                 continue;
             }
 

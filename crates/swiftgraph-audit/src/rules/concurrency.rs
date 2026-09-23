@@ -7,7 +7,28 @@ use crate::rules::{
 use tree_sitter::Node;
 
 /// CONC-001: Missing @MainActor on UIViewController subclass or ObservableObject.
+///
+/// High when the class has asynchronous code (async/await, `Task`,
+/// `DispatchQueue`, `receive(on:)`), where state can be touched off the main
+/// thread; low otherwise — a convention question rather than a race. Projects
+/// that hop to the main actor explicitly can disable the rule or change its
+/// severity in `.swiftgraph/config.json` (`audit.disabled_rules`,
+/// `audit.severity`).
 pub struct MissingMainActor;
+
+/// Markers of code that may run off the main thread.
+const ASYNC_MARKERS: &[&str] = &[
+    "async",
+    "await",
+    "Task {",
+    "Task(",
+    "Task.detached",
+    "DispatchQueue",
+    "OperationQueue",
+    ".receive(on:",
+    ".subscribe(on:",
+    "Thread.",
+];
 
 impl AuditRule for MissingMainActor {
     fn id(&self) -> &str {
@@ -50,13 +71,20 @@ impl AuditRule for MissingMainActor {
             }
 
             let name = decl_name(decl, ctx.source).unwrap_or_default();
+            let text = node_text(decl, ctx.source);
+            let has_async = ASYNC_MARKERS.iter().any(|m| text.contains(m));
+            let (severity, note) = if has_async {
+                (self.severity(), "")
+            } else {
+                (Severity::Low, " (no asynchronous code in the class)")
+            };
             issues.push(AuditIssue {
                 id: format!("{}:{}", self.id(), ctx.file_path),
                 category: self.category(),
-                severity: self.severity(),
+                severity,
                 rule: self.id().to_string(),
                 message: format!(
-                    "`{name}` inherits UIViewController or ObservableObject but is missing @MainActor"
+                    "`{name}` inherits UIViewController or ObservableObject but is missing @MainActor{note}"
                 ),
                 file: ctx.file_path.to_string(),
                 line: decl.start_position().row as u32 + 1,

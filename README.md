@@ -311,6 +311,8 @@ $ swiftgraph boundaries --config boundaries.json
 | Modernization | MOD-001..005 | ObservableObject to @Observable, NavigationView to NavigationStack |
 | Swift Performance | PERF-001..006 | Large value copies, excessive ARC, existentials in collections, actor hops in loops |
 
+Rules that depend on conventions report their confidence through severity: CONC-001 is high only when the class has asynchronous code, SUI-005 is low outside a `ScrollView`. Conformances are resolved across files, so ARCH-005 and PERF-001 see `protocol CoordinatorObject: ObservableObject` or `protocol ApiResponse: Decodable` declared elsewhere. When `max_issues` cuts the list, JSON output has `"truncated": true` and `found_issues`.
+
 ### Output Formats
 
 ```bash
@@ -329,9 +331,12 @@ swiftgraph audit --format sarif > out.sarif  # SARIF (GitHub Code Scanning, Sona
   "include": [],
   "exclude": ["**/Generated/**", "**/Pods/**", "**/.build/**", "**/DerivedData/**"],
   "index_store_path": "auto",
-  "resolution": { "max_candidates": 3 }
+  "resolution": { "max_candidates": 3 },
+  "audit": { "disabled_rules": [], "severity": {} }
 }
 ```
+
+`audit.disabled_rules` turns rules off for the project (for example `["CONC-001"]` when view models hop to the main actor explicitly); `audit.severity` replaces a rule's severity, e.g. `{"SUI-005": "low"}`. The older `exclude_rules` key is read as `disabled_rules`.
 
 An empty `include` means every `.swift` file under the project root that no `exclude` glob matches. Globs are matched against paths relative to the root, for example `"include": ["App/**/*.swift"]`.
 

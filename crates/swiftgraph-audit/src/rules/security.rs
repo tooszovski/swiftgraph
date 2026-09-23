@@ -6,7 +6,29 @@ use crate::engine::{AuditIssue, Category, Severity};
 use crate::rules::{decl_name, find_descendants, node_text, AuditRule, FileContext};
 
 /// SEC-001: Hardcoded secrets — API keys, tokens, passwords in string literals.
+///
+/// Literals that name something rather than hold a secret are skipped:
+/// enum raw values (`case removeToken = "..."`), HTTP header names
+/// (`"X-API-KEY"`), public addresses (`0x` + 40 hex digits) and text with
+/// spaces or brackets (analytics events, UI strings).
 pub struct HardcodedSecrets;
+
+/// Whether a matched literal is a name or label rather than a secret.
+fn is_benign_literal(line: &str, value: &str) -> bool {
+    static HEADER: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    static ADDRESS: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    let matches = |cell: &'static std::sync::OnceLock<Option<Regex>>, pattern: &str| {
+        cell.get_or_init(|| Regex::new(pattern).ok())
+            .as_ref()
+            .is_some_and(|re| re.is_match(value))
+    };
+    line.trim_start().starts_with("case ")
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || "[]()".contains(c))
+        || matches(&HEADER, r"^[A-Za-z]+(-[A-Za-z]+)+$")
+        || matches(&ADDRESS, r"^0x[0-9a-fA-F]{40}$")
+}
 
 impl AuditRule for HardcodedSecrets {
     fn id(&self) -> &str {
@@ -25,22 +47,29 @@ impl AuditRule for HardcodedSecrets {
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
         let mut issues = Vec::new();
 
+        // (pattern, label, whether group 2 is an assigned literal to vet)
         let patterns = [
             (
-                r#"(?i)(api[_\-]?key|apikey)\s*[:=]\s*"[^"]{8,}""#,
+                r#"(?i)(api[_\-]?key|apikey)\s*[:=]\s*"([^"]{8,})""#,
                 "API key",
+                true,
             ),
             (
-                r#"(?i)(secret|token|password|passwd|pwd)\s*[:=]\s*"[^"]{8,}""#,
+                r#"(?i)(secret|token|password|passwd|pwd)\s*[:=]\s*"([^"]{8,})""#,
                 "secret/token/password",
+                true,
             ),
-            (r#"(?i)bearer\s+[a-zA-Z0-9\-._~+/]+=*"#, "Bearer token"),
-            (r#"sk-[a-zA-Z0-9]{20,}"#, "OpenAI API key"),
-            (r#"ghp_[a-zA-Z0-9]{36}"#, "GitHub PAT"),
-            (r#"xox[bprs]-[a-zA-Z0-9\-]+"#, "Slack token"),
+            (
+                r#"(?i)bearer\s+[a-zA-Z0-9\-._~+/]+=*"#,
+                "Bearer token",
+                false,
+            ),
+            (r#"sk-[a-zA-Z0-9]{20,}"#, "OpenAI API key", false),
+            (r#"ghp_[a-zA-Z0-9]{36}"#, "GitHub PAT", false),
+            (r#"xox[bprs]-[a-zA-Z0-9\-]+"#, "Slack token", false),
         ];
 
-        for (pattern, label) in &patterns {
+        for (pattern, label, literal) in &patterns {
             if let Ok(re) = Regex::new(pattern) {
                 for (i, line) in ctx.source.lines().enumerate() {
                     // Skip comments
@@ -51,7 +80,14 @@ impl AuditRule for HardcodedSecrets {
                     {
                         continue;
                     }
-                    if re.is_match(line) {
+                    let Some(caps) = re.captures(line) else {
+                        continue;
+                    };
+                    let benign = *literal
+                        && caps
+                            .get(2)
+                            .is_some_and(|value| is_benign_literal(line, value.as_str()));
+                    if !benign {
                         issues.push(AuditIssue {
                             id: format!("{}:{}", self.id(), ctx.file_path),
                             category: self.category(),
@@ -143,7 +179,131 @@ impl AuditRule for InsecureStorage {
 }
 
 /// SEC-003: Logging sensitive data — print/NSLog/os_log with credentials.
+///
+/// Identifiers on the log line are split into words; `token` alone (an
+/// asset in wallet apps, `token.name`, `tokenItem`) is not sensitive, while
+/// `password`, `secret`, `mnemonic`, `seed`, `privateKey`, `accessToken`,
+/// `refreshToken`, `apiKey` and similar are.
 pub struct SensitiveLogging;
+
+/// Single words that mark a credential.
+const SENSITIVE_WORDS: &[&str] = &[
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "mnemonic",
+    "seed",
+    "credential",
+    "credentials",
+    "apikey",
+    "privatekey",
+    "accesstoken",
+    "refreshtoken",
+];
+
+/// Adjacent word pairs that mark a credential.
+const SENSITIVE_PAIRS: &[(&str, &str)] = &[
+    ("private", "key"),
+    ("access", "token"),
+    ("refresh", "token"),
+    ("auth", "token"),
+    ("session", "token"),
+    ("id", "token"),
+    ("api", "key"),
+    ("secret", "key"),
+];
+
+/// Lowercase words of an identifier: `userPassword` → `user`, `password`.
+fn identifier_words(ident: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut prev_lower = false;
+    for c in ident.chars() {
+        if c == '_' || !c.is_alphanumeric() {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            prev_lower = false;
+            continue;
+        }
+        if c.is_uppercase() && prev_lower && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+        prev_lower = c.is_lowercase() || c.is_ascii_digit();
+        current.extend(c.to_lowercase());
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    words
+}
+
+/// `line` without string literal text, keeping interpolations
+/// (`"pwd \(password)"` → `" \(password)"`-like code only).
+fn code_only(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut in_string = false;
+    let mut depth = 0usize; // parentheses inside an interpolation
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string && depth == 0 {
+            match c {
+                '\\' if chars.peek() == Some(&'(') => {
+                    chars.next();
+                    depth = 1;
+                    out.push(' ');
+                }
+                '\\' => {
+                    chars.next();
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        if in_string {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            if depth == 0 {
+                out.push(' ');
+                continue;
+            }
+        } else if c == '"' {
+            in_string = true;
+            out.push(' ');
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The credential term found in the code of `line` (not in its message
+/// text), if any.
+fn sensitive_term(line: &str) -> Option<String> {
+    let code = code_only(line);
+    for ident in code
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+    {
+        let words = identifier_words(ident);
+        if let Some(w) = words.iter().find(|w| SENSITIVE_WORDS.contains(&w.as_str())) {
+            return Some(w.clone());
+        }
+        if let Some((a, b)) = words.windows(2).find_map(|pair| {
+            SENSITIVE_PAIRS
+                .iter()
+                .find(|(a, b)| pair[0] == *a && pair[1] == *b)
+        }) {
+            return Some(format!("{a} {b}"));
+        }
+    }
+    None
+}
 
 impl AuditRule for SensitiveLogging {
     fn id(&self) -> &str {
@@ -163,14 +323,6 @@ impl AuditRule for SensitiveLogging {
         let mut issues = Vec::new();
 
         let log_functions = ["print(", "NSLog(", "os_log(", "Logger.", "debugPrint("];
-        let sensitive = [
-            "password",
-            "token",
-            "secret",
-            "credential",
-            "apiKey",
-            "api_key",
-        ];
 
         for (i, line) in ctx.source.lines().enumerate() {
             let trimmed = line.trim();
@@ -183,25 +335,21 @@ impl AuditRule for SensitiveLogging {
                 continue;
             }
 
-            let line_lower = line.to_lowercase();
-            for s in &sensitive {
-                if line_lower.contains(&s.to_lowercase()) {
-                    issues.push(AuditIssue {
-                        id: format!("{}:{}", self.id(), ctx.file_path),
-                        category: self.category(),
-                        severity: self.severity(),
-                        rule: self.id().to_string(),
-                        message: format!("Potentially logging sensitive data (`{s}`)"),
-                        file: ctx.file_path.to_string(),
-                        line: i as u32 + 1,
-                        symbol: None,
-                        fix: Some(
-                            "Redact sensitive values in log output or use `.private` privacy level"
-                                .into(),
-                        ),
-                    });
-                    break;
-                }
+            if let Some(s) = sensitive_term(line) {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: format!("Potentially logging sensitive data (`{s}`)"),
+                    file: ctx.file_path.to_string(),
+                    line: i as u32 + 1,
+                    symbol: None,
+                    fix: Some(
+                        "Redact sensitive values in log output or use `.private` privacy level"
+                            .into(),
+                    ),
+                });
             }
         }
 

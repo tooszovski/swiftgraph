@@ -38,6 +38,23 @@ pub struct Config {
     /// Call resolution settings for tree-sitter mode.
     #[serde(default)]
     pub resolution: ResolutionConfig,
+    /// Audit rule settings.
+    #[serde(default)]
+    pub audit: AuditConfig,
+}
+
+/// Per-project audit settings.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct AuditConfig {
+    /// Rule IDs never reported, e.g. `["CONC-001"]` for a project whose view
+    /// models hop to the main actor explicitly. `exclude_rules` is accepted
+    /// as an alias.
+    #[serde(default, alias = "exclude_rules")]
+    pub disabled_rules: Vec<String>,
+    /// Severity per rule ID (`low`, `medium`, `high`, `critical`),
+    /// replacing the rule's own severity.
+    #[serde(default)]
+    pub severity: std::collections::BTreeMap<String, String>,
 }
 
 /// How tree-sitter call sites are resolved to project symbols.
@@ -84,6 +101,7 @@ impl Default for Config {
             index_store_path: "auto".into(),
             project_dir: None,
             resolution: ResolutionConfig::default(),
+            audit: AuditConfig::default(),
         }
     }
 }
@@ -193,7 +211,9 @@ mod tests {
         let raw: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert!(raw.get("swift_syntax_path").is_none(), "dead key written");
-        assert!(raw.get("audit").is_none(), "dead key written");
+        // `audit` is read by the audit runner since rule settings moved there.
+        assert_eq!(raw["audit"]["disabled_rules"], serde_json::json!([]));
+        assert_eq!(raw["resolution"]["max_candidates"], 3);
 
         let config = Config::load(dir.path());
         assert!(config.include.is_empty());

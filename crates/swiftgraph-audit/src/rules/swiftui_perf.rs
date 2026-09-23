@@ -231,7 +231,52 @@ impl AuditRule for StateObjectDeprecated {
 }
 
 /// SUI-005: Large list without lazy loading.
+///
+/// `ForEach` over a literal collection of at most [`SMALL_COLLECTION`]
+/// elements (`["a", "b"]`, `0..<3`) is not reported. Outside a
+/// `ScrollView` the content cannot be long, so the finding is low; inside a
+/// `ScrollView` it keeps the rule's severity.
 pub struct NonLazyList;
+
+/// Literal collections up to this size are rendered eagerly without cost.
+pub const SMALL_COLLECTION: usize = 10;
+
+/// Whether the first argument of `ForEach(...)` is a small literal.
+fn small_literal_collection(call: tree_sitter::Node, source: &str) -> bool {
+    let Some(arg) =
+        crate::rules::find_descendants(call, source, &|n, _| n.kind() == "value_argument")
+            .into_iter()
+            .next()
+    else {
+        return false;
+    };
+    let text = node_text(arg, source).trim();
+    if let Some(inner) = text.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+        return inner.split(',').filter(|e| !e.trim().is_empty()).count() <= SMALL_COLLECTION;
+    }
+    for op in ["..<", "..."] {
+        if let Some((lo, hi)) = text.split_once(op) {
+            if let (Ok(lo), Ok(hi)) = (lo.trim().parse::<usize>(), hi.trim().parse::<usize>()) {
+                return hi.saturating_sub(lo) <= SMALL_COLLECTION;
+            }
+        }
+    }
+    false
+}
+
+/// Whether `node` is inside a `ScrollView { ... }`.
+fn in_scroll_view(node: tree_sitter::Node, source: &str) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "call_expression"
+            && crate::rules::callee_name(n, source) == Some("ScrollView")
+        {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
 
 impl AuditRule for NonLazyList {
     fn id(&self) -> &str {
@@ -284,13 +329,22 @@ impl AuditRule for NonLazyList {
             if !in_lazy {
                 let text = node_text(call, ctx.source);
                 // Only flag if ForEach iterates over something that could be large
-                if text.contains("ForEach(") {
+                if text.contains("ForEach(") && !small_literal_collection(call, ctx.source) {
+                    let scrolling = in_scroll_view(call, ctx.source);
                     issues.push(AuditIssue {
                         id: format!("{}:{}", self.id(), ctx.file_path),
                         category: self.category(),
-                        severity: self.severity(),
+                        severity: if scrolling {
+                            self.severity()
+                        } else {
+                            Severity::Low
+                        },
                         rule: self.id().to_string(),
-                        message: "ForEach in non-lazy container — all items rendered at once".into(),
+                        message: if scrolling {
+                            "ForEach in non-lazy container inside ScrollView — all items rendered at once".into()
+                        } else {
+                            "ForEach in non-lazy container — all items rendered at once (not scrollable, likely short)".into()
+                        },
                         file: ctx.file_path.to_string(),
                         line: call.start_position().row as u32 + 1,
                         symbol: None,

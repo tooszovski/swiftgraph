@@ -4,7 +4,148 @@ use crate::engine::{AuditIssue, Category, Severity};
 use crate::rules::{find_descendants, node_text, AuditRule, FileContext};
 
 /// MEM-001: Closure capturing self without [weak self] in escaping context.
+///
+/// A closure is considered escaping when it is stored (assigned to a
+/// property or variable), passed as a completion-like argument
+/// (`completion:`, `handler:`, `onX:` ...), or is a trailing closure of a
+/// completion-like call or of a Combine pipeline. Closures of
+/// non-escaping standard library calls (`map`, `filter`, `forEach`,
+/// `first(where:)` ...) and closures inside structs and enums, where `self`
+/// is a value, are ignored.
 pub struct ClosureRetainCycle;
+
+/// Standard library calls whose closure parameters are non-escaping.
+const NON_ESCAPING_CALLS: &[&str] = &[
+    "map",
+    "flatMap",
+    "compactMap",
+    "filter",
+    "reduce",
+    "forEach",
+    "sorted",
+    "sort",
+    "first",
+    "firstIndex",
+    "last",
+    "lastIndex",
+    "contains",
+    "allSatisfy",
+    "min",
+    "max",
+    "removeAll",
+    "partition",
+    "split",
+    "drop",
+    "prefix",
+    "mapValues",
+    "compactMapValues",
+    "withAnimation",
+    "withTransaction",
+    "autoreleasepool",
+    "sync",
+    "performAndWait",
+    "withUnsafeBytes",
+    "withUnsafeMutableBytes",
+    "withUnsafePointer",
+    "withLock",
+    "elementsEqual",
+    "lexicographicallyPrecedes",
+    "starts",
+    "enumerateKeysAndObjects",
+];
+
+/// Combine operators: a closure anywhere in such a chain lives as long as
+/// the subscription.
+const COMBINE_MARKERS: &[&str] = &[
+    ".sink",
+    ".store(in:",
+    ".assign(to:",
+    ".eraseToAnyPublisher",
+    ".receive(on:",
+    ".handleEvents",
+];
+
+/// Parameter labels and call names that usually take stored callbacks.
+const ESCAPING_WORDS: &[&str] = &[
+    "completion",
+    "handler",
+    "callback",
+    "closure",
+    "block",
+    "observ",
+    "subscribe",
+    "sink",
+];
+
+fn escaping_word(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ESCAPING_WORDS.iter().any(|w| lower.contains(w))
+        || (name.starts_with("on") && name[2..].starts_with(char::is_uppercase))
+}
+
+/// The outermost expression of a member chain containing `call`.
+fn chain_root(call: tree_sitter::Node) -> tree_sitter::Node {
+    let mut root = call;
+    while let Some(parent) = root.parent() {
+        if matches!(
+            parent.kind(),
+            "navigation_expression" | "call_expression" | "call_suffix" | "postfix_expression"
+        ) {
+            root = parent;
+        } else {
+            break;
+        }
+    }
+    root
+}
+
+/// Whether the closure outlives the call it is passed to.
+fn is_escaping(closure: tree_sitter::Node, source: &str) -> bool {
+    let Some(parent) = closure.parent() else {
+        return false;
+    };
+    let call = match parent.kind() {
+        // `handler = { ... }`, `self.onTap = { ... }`
+        "assignment" => return true,
+        // `var onTap = { ... }` in a type body
+        "property_declaration" => {
+            return parent
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "class_body" | "enum_class_body"));
+        }
+        // `f(completion: { ... })`
+        "value_argument" => {
+            if let Some(label) = (0..parent.named_child_count())
+                .filter_map(|i| parent.named_child(i))
+                .find(|c| c.kind() == "value_argument_label")
+            {
+                if escaping_word(node_text(label, source)) {
+                    return true;
+                }
+            }
+            parent.parent().and_then(|args| args.parent())
+        }
+        // `f { ... }`
+        "call_suffix" => Some(parent),
+        _ => None,
+    };
+    let Some(call) = call.and_then(|suffix| suffix.parent()) else {
+        return false;
+    };
+    if call.kind() != "call_expression" {
+        return false;
+    }
+    let name = crate::rules::callee_name(call, source).unwrap_or_default();
+    let chain = node_text(chain_root(call), source);
+    if COMBINE_MARKERS.iter().any(|m| chain.contains(m)) {
+        return true;
+    }
+    if NON_ESCAPING_CALLS.contains(&name) {
+        return false;
+    }
+    // Trailing closure of a completion-like call
+    parent.kind() == "call_suffix" && escaping_word(name)
+}
 
 impl AuditRule for ClosureRetainCycle {
     fn id(&self) -> &str {
@@ -24,7 +165,6 @@ impl AuditRule for ClosureRetainCycle {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find closures in escaping positions (stored properties, completion handlers)
         let closures =
             find_descendants(root, ctx.source, &|node, _| node.kind() == "lambda_literal");
 
@@ -36,30 +176,32 @@ impl AuditRule for ClosureRetainCycle {
             if !has_self || has_weak_self {
                 continue;
             }
+            if crate::rules::in_value_type(closure, ctx.source, ctx.project) {
+                continue;
+            }
+            // Only the innermost closure mentioning `self` is reported.
+            let nested_self =
+                find_descendants(closure, ctx.source, &|n, _| n.kind() == "lambda_literal")
+                    .into_iter()
+                    .skip(1)
+                    .any(|inner| node_text(inner, ctx.source).contains("self."));
+            if nested_self && !direct_self_use(closure) {
+                continue;
+            }
 
-            // Check if in escaping context (heuristic: assigned to property, or in completion handler)
-            if let Some(parent) = closure.parent() {
-                let parent_text = node_text(parent, ctx.source);
-                let is_escaping = parent_text.contains("completion")
-                    || parent_text.contains("handler")
-                    || parent_text.contains("callback")
-                    || parent_text.contains("closure")
-                    || is_property_assignment(parent, ctx.source);
-
-                if is_escaping {
-                    issues.push(AuditIssue {
-                        id: format!("{}:{}", self.id(), ctx.file_path),
-                        category: self.category(),
-                        severity: self.severity(),
-                        rule: self.id().to_string(),
-                        message: "Closure captures `self` strongly in potentially escaping context"
-                            .into(),
-                        file: ctx.file_path.to_string(),
-                        line: closure.start_position().row as u32 + 1,
-                        symbol: None,
-                        fix: Some("Use `[weak self]` capture list".into()),
-                    });
-                }
+            if is_escaping(closure, ctx.source) {
+                issues.push(AuditIssue {
+                    id: format!("{}:{}", self.id(), ctx.file_path),
+                    category: self.category(),
+                    severity: self.severity(),
+                    rule: self.id().to_string(),
+                    message: "Closure captures `self` strongly in potentially escaping context"
+                        .into(),
+                    file: ctx.file_path.to_string(),
+                    line: closure.start_position().row as u32 + 1,
+                    symbol: None,
+                    fix: Some("Use `[weak self]` capture list".into()),
+                });
             }
         }
 
@@ -67,8 +209,64 @@ impl AuditRule for ClosureRetainCycle {
     }
 }
 
+/// Whether `self.` occurs in the closure outside of nested closures.
+fn direct_self_use(closure: tree_sitter::Node) -> bool {
+    fn walk(node: tree_sitter::Node, top: bool) -> bool {
+        if !top && node.kind() == "lambda_literal" {
+            return false;
+        }
+        if node.kind() == "self_expression"
+            && node
+                .parent()
+                .is_some_and(|p| p.kind() == "navigation_expression")
+        {
+            return true;
+        }
+        (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .any(|c| walk(c, false))
+    }
+    walk(closure, true)
+}
+
 /// MEM-002: Strong delegate reference.
+///
+/// Only stored properties of classes and actors named `...delegate` or
+/// `...dataSource` with a declared reference-like type are reported; locals,
+/// computed properties, closures and value types are not delegates, and a
+/// property initialized in place (`lazy var dataSource = ...`) holds an
+/// object its owner created, not a back-reference.
 pub struct StrongDelegate;
+
+/// Declared types that are values, never delegates.
+const VALUE_TYPES: &[&str] = &[
+    "String",
+    "Substring",
+    "Int",
+    "Int8",
+    "Int16",
+    "Int32",
+    "Int64",
+    "UInt",
+    "UInt8",
+    "UInt16",
+    "UInt32",
+    "UInt64",
+    "Double",
+    "Float",
+    "CGFloat",
+    "Decimal",
+    "Bool",
+    "Data",
+    "Date",
+    "URL",
+    "UUID",
+    "Character",
+    "NSRange",
+    "CGRect",
+    "CGSize",
+    "CGPoint",
+];
 
 impl AuditRule for StrongDelegate {
     fn id(&self) -> &str {
@@ -90,26 +288,74 @@ impl AuditRule for StrongDelegate {
 
         let properties = find_descendants(root, ctx.source, &|node, _| {
             node.kind() == "property_declaration"
+                && node.parent().is_some_and(|p| p.kind() == "class_body")
         });
 
         for prop in properties {
-            let text = node_text(prop, ctx.source);
-            let text_lower = text.to_lowercase();
-
-            // Check if property name suggests delegate/datasource
-            let is_delegate = text_lower.contains("delegate") || text_lower.contains("datasource");
-            if !is_delegate {
+            // Stored properties of classes and actors only
+            let Some(owner) = prop.parent().and_then(|body| body.parent()) else {
+                continue;
+            };
+            let keyword = crate::rules::class_keyword(owner, ctx.source);
+            let owner_is_class = match keyword {
+                "class" | "actor" => true,
+                "extension" => crate::rules::decl_type_name(owner, ctx.source)
+                    .and_then(|n| ctx.project.kind_of(&n).map(str::to_string))
+                    .is_some_and(|k| matches!(k.as_str(), "class" | "actor")),
+                _ => false,
+            };
+            if !owner_is_class {
                 continue;
             }
 
-            // Check if it's weak
-            let is_weak = text.contains("weak ");
-            if is_weak {
+            let mut name = None;
+            let mut declared_type = None;
+            let mut computed = false;
+            for i in 0..prop.child_count() {
+                let Some(child) = prop.child(i) else { continue };
+                match child.kind() {
+                    "pattern" if name.is_none() => name = Some(node_text(child, ctx.source)),
+                    "type_annotation" => declared_type = child.named_child(0),
+                    "computed_property" => computed = true,
+                    _ => {}
+                }
+            }
+            // Initialized in place (other than `= nil`): an owned object,
+            // not a back-reference
+            if prop
+                .child_by_field_name("value")
+                .is_some_and(|v| node_text(v, ctx.source).trim() != "nil")
+            {
+                continue;
+            }
+            let Some(name) = name else { continue };
+            let lower = name.to_ascii_lowercase();
+            if !(lower.ends_with("delegate") || lower.ends_with("datasource")) || computed {
+                continue;
+            }
+            // A reference-like declared type: not a closure, collection or value
+            let Some(ty) = declared_type else { continue };
+            let type_text = node_text(ty, ctx.source)
+                .trim_end_matches(['?', '!'])
+                .trim();
+            if matches!(
+                ty.kind(),
+                "function_type" | "array_type" | "dictionary_type" | "tuple_type"
+            ) || type_text.starts_with('(')
+                || type_text.starts_with('[')
+                || type_text.contains("->")
+                || VALUE_TYPES.contains(&type_text)
+            {
                 continue;
             }
 
-            // Skip protocol declarations (they don't have "var"/"let")
-            if !text.contains("var ") && !text.contains("let ") {
+            let modifiers = (0..prop.child_count())
+                .filter_map(|i| prop.child(i))
+                .filter(|c| c.kind() == "modifiers")
+                .map(|m| node_text(m, ctx.source))
+                .collect::<Vec<_>>()
+                .join(" ");
+            if modifiers.contains("weak") || modifiers.contains("unowned") {
                 continue;
             }
 
@@ -121,7 +367,7 @@ impl AuditRule for StrongDelegate {
                 message: "Delegate/datasource property is not declared as `weak` — potential retain cycle".into(),
                 file: ctx.file_path.to_string(),
                 line: prop.start_position().row as u32 + 1,
-                symbol: None,
+                symbol: Some(name.to_string()),
                 fix: Some("Add `weak` modifier: `weak var delegate: ...`".into()),
             });
         }
@@ -226,12 +472,6 @@ impl AuditRule for ObserverLeak {
 
         issues
     }
-}
-
-/// Helper: check if a node is a property assignment context.
-fn is_property_assignment(node: tree_sitter::Node, source: &str) -> bool {
-    let text = node_text(node, source);
-    text.contains("= ") || node.kind() == "assignment"
 }
 
 /// MEM-005: KVO observation not removed.

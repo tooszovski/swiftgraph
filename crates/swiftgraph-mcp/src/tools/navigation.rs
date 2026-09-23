@@ -562,6 +562,7 @@ pub fn parse_audit_options(
         min_severity: severity,
         path_filter,
         max_issues: max_issues.unwrap_or(100),
+        ..AuditOptions::default()
     }
 }
 

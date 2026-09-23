@@ -1,5 +1,6 @@
 //! Audit runner — scans Swift files, applies rules, collects findings.
 
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -29,6 +30,11 @@ pub struct AuditOptions {
     pub path_filter: Option<String>,
     /// Max issues to return.
     pub max_issues: usize,
+    /// Rule IDs to skip, in addition to `audit.disabled_rules` in
+    /// `.swiftgraph/config.json`.
+    pub disabled_rules: Vec<String>,
+    /// Severity per rule ID; wins over `audit.severity` in the config.
+    pub severity_overrides: HashMap<String, Severity>,
 }
 
 impl Default for AuditOptions {
@@ -38,6 +44,8 @@ impl Default for AuditOptions {
             min_severity: Severity::Low,
             path_filter: None,
             max_issues: 500,
+            disabled_rules: Vec::new(),
+            severity_overrides: HashMap::new(),
         }
     }
 }
@@ -46,8 +54,30 @@ impl Default for AuditOptions {
 pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditResult, RunnerError> {
     let _span = info_span!("audit", root = %project_root.display()).entered();
 
+    // Rule settings from `.swiftgraph/config.json`, then the options
+    let config = swiftgraph_core::config::Config::load(project_root).audit;
+    let disabled: HashSet<&str> = config
+        .disabled_rules
+        .iter()
+        .chain(&options.disabled_rules)
+        .map(String::as_str)
+        .collect();
+    let mut severity: HashMap<String, Severity> = config
+        .severity
+        .iter()
+        .filter_map(|(rule, level)| {
+            let parsed = Severity::parse(level);
+            if parsed.is_none() {
+                tracing::warn!("audit.severity.{rule}: unknown severity {level:?}");
+            }
+            Some((rule.clone(), parsed?))
+        })
+        .collect();
+    severity.extend(options.severity_overrides.clone());
+
     // Collect all rules
-    let all_rules = collect_rules(options);
+    let mut all_rules = collect_rules(options);
+    all_rules.retain(|rule| !disabled.contains(rule.id()));
     info!(
         "{} rules loaded across {} categories",
         all_rules.len(),
@@ -81,10 +111,26 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
         .map(|e| e.into_path())
         .collect();
 
+    // Project-wide facts (conformances declared in other files)
+    let project = swift_files
+        .par_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .map(|source| rules::ProjectFacts::scan(&source))
+        .reduce(rules::ProjectFacts::default, |mut a, b| {
+            a.merge(b);
+            a
+        });
+
     // Process files in parallel
     let all_issues: Vec<AuditIssue> = swift_files
         .par_iter()
-        .flat_map(|path| check_file(path, &all_rules).unwrap_or_default())
+        .flat_map(|path| check_file(path, &all_rules, &project).unwrap_or_default())
+        .map(|mut issue| {
+            if let Some(level) = severity.get(&issue.rule) {
+                issue.severity = *level;
+            }
+            issue
+        })
         .filter(|issue| issue.severity >= options.min_severity)
         .collect();
 
@@ -101,8 +147,8 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
     });
 
     // Per-category cap: ensure each category gets fair representation
+    let found = issues.len();
     if issues.len() > options.max_issues {
-        use std::collections::HashMap;
         let mut cat_counts: HashMap<Category, usize> = HashMap::new();
         let n_categories = issues
             .iter()
@@ -120,11 +166,18 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
         issues.truncate(options.max_issues);
     }
 
-    Ok(AuditResult::from_issues(issues))
+    let mut result = AuditResult::from_issues(issues);
+    result.found_issues = found;
+    result.truncated = result.total_issues < found;
+    Ok(result)
 }
 
 /// Check a single file against all rules.
-fn check_file(path: &Path, rules: &[Box<dyn AuditRule>]) -> Result<Vec<AuditIssue>, RunnerError> {
+fn check_file(
+    path: &Path,
+    rules: &[Box<dyn AuditRule>],
+    project: &rules::ProjectFacts,
+) -> Result<Vec<AuditIssue>, RunnerError> {
     let source = std::fs::read_to_string(path).map_err(RunnerError::Io)?;
     let file_path = path.to_string_lossy().to_string();
 
@@ -135,6 +188,7 @@ fn check_file(path: &Path, rules: &[Box<dyn AuditRule>]) -> Result<Vec<AuditIssu
         file_path: &file_path,
         source: &source,
         tree: &tree,
+        project,
     };
 
     let mut issues = Vec::new();
@@ -212,6 +266,7 @@ class MyView: UIView {
             file_path: "test.swift",
             source,
             tree: &tree,
+            project: &rules::ProjectFacts::default(),
         };
 
         let rule = rules::memory::StrongDelegate;
@@ -233,6 +288,7 @@ func saveToken(_ token: String) {
             file_path: "test.swift",
             source,
             tree: &tree,
+            project: &rules::ProjectFacts::default(),
         };
 
         let rule = rules::security::InsecureStorage;
@@ -252,6 +308,7 @@ let url = URL(string: "http://api.example.com/data")!
             file_path: "test.swift",
             source,
             tree: &tree,
+            project: &rules::ProjectFacts::default(),
         };
 
         let rule = rules::security::AtsBypass;
@@ -271,6 +328,7 @@ let url = URL(string: "http://localhost:8080/api")!
             file_path: "test.swift",
             source,
             tree: &tree,
+            project: &rules::ProjectFacts::default(),
         };
 
         let rule = rules::security::AtsBypass;
@@ -300,6 +358,8 @@ let url = URL(string: "http://localhost:8080/api")!
             };
             let result = run_audit(dir.path(), &options).unwrap();
             assert!(result.issues.len() >= 2);
+            assert_eq!(result.truncated, result.found_issues > max_issues);
+            assert!(result.found_issues >= result.total_issues);
             let keys: Vec<_> = result.issues.iter().map(key).collect();
             let mut sorted = keys.clone();
             sorted.sort();
@@ -314,6 +374,7 @@ let url = URL(string: "http://localhost:8080/api")!
             file_path: "test.swift",
             source,
             tree: &tree,
+            project: &rules::ProjectFacts::default(),
         };
         rule.check(&ctx)
     }

@@ -89,7 +89,7 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
 
     // Sort by severity (highest first)
     let mut issues = all_issues;
-    issues.sort_by(|a, b| b.severity.cmp(&a.severity));
+    issues.sort_by_key(|i| std::cmp::Reverse(i.severity));
 
     // Per-category cap: ensure each category gets fair representation
     if issues.len() > options.max_issues {

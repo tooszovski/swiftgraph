@@ -203,6 +203,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn fts_prefix_query_survives_special_characters() {
+        let conn = open_memory_db().unwrap();
+        queries::upsert_file(&conn, "A.swift", "h", 1).unwrap();
+        let mut node = make_node("s:3App4UserV", "User", "A.swift", SymbolKind::Struct);
+        node.qualified_name = "App.User".into();
+        queries::upsert_node(&conn, &node).unwrap();
+
+        for q in ["App.User", "s:3App", "User-", "\"User", "Us er", "App.Us"] {
+            let fts = queries::fts_prefix_query(q);
+            assert!(
+                queries::search_nodes(&conn, &fts, 10).is_ok(),
+                "FTS syntax error for {q:?} -> {fts}"
+            );
+        }
+        assert_eq!(
+            queries::search_with_fallback(&conn, "App.Us", None, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn resolve_symbol_prefers_id_then_exact_name() {
+        let conn = open_memory_db().unwrap();
+        queries::upsert_file(&conn, "A.swift", "h", 3).unwrap();
+        let ty = make_node("s:3App5StoreC", "Store", "A.swift", SymbolKind::Class);
+        let mut method = make_node(
+            "s:3App5StoreC4load2idyS_tF",
+            "load(id:)",
+            "A.swift",
+            SymbolKind::Function,
+        );
+        method.location.line = 5;
+        let prefixed = make_node(
+            "s:3App9StoreKeyV",
+            "StoreKey",
+            "A.swift",
+            SymbolKind::Struct,
+        );
+        for n in [&prefixed, &method, &ty] {
+            queries::upsert_node(&conn, n).unwrap();
+        }
+
+        let id = |q: &str| queries::resolve_symbol(&conn, q).unwrap().map(|n| n.id);
+        assert_eq!(id("s:3App5StoreC").as_deref(), Some("s:3App5StoreC"));
+        assert_eq!(id("Store").as_deref(), Some("s:3App5StoreC"));
+        assert_eq!(id("load").as_deref(), Some("s:3App5StoreC4load2idyS_tF"));
+        assert_eq!(
+            id("load(id:)").as_deref(),
+            Some("s:3App5StoreC4load2idyS_tF")
+        );
+        assert_eq!(id("StoreK").as_deref(), Some("s:3App9StoreKeyV"));
+        assert_eq!(id("Nope"), None);
+    }
+
     fn make_node(id: &str, name: &str, file: &str, kind: SymbolKind) -> GraphNode {
         GraphNode {
             id: id.into(),

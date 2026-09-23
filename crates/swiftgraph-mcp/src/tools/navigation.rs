@@ -46,35 +46,7 @@ pub fn search(db_path: &Path, params: SearchParams) -> Result<SearchResponse> {
         // List all (optionally filtered by kind)
         queries::find_nodes_by_name(&conn, "", kind, limit)?
     } else {
-        // Try FTS5 with auto-prefix (append * for prefix matching)
-        let fts_query = if query.contains('*') || query.contains('"') {
-            query.to_string()
-        } else {
-            format!("{query}*")
-        };
-
-        let mut results = queries::search_nodes(&conn, &fts_query, limit).unwrap_or_default();
-
-        // Apply kind filter (FTS5 doesn't support it natively)
-        if let Some(k) = kind {
-            results.retain(|n| n.kind.as_str() == k);
-        }
-
-        // Fallback chain: trigram substring → LIKE
-        if results.is_empty() {
-            // Try trigram FTS for substring matching (e.g., "Delegate" → "AppDelegate")
-            if let Ok(mut tri) = queries::search_nodes_trigram(&conn, query, limit) {
-                if let Some(k) = kind {
-                    tri.retain(|n| n.kind.as_str() == k);
-                }
-                results = tri;
-            }
-        }
-        if results.is_empty() {
-            results = queries::find_nodes_by_name(&conn, query, kind, limit)?;
-        }
-
-        results
+        queries::search_with_fallback(&conn, query, kind, limit)?
     };
 
     let total = results.len();
@@ -120,7 +92,7 @@ pub struct NodeRelations {
 #[allow(dead_code)]
 pub fn get_node(db_path: &Path, params: NodeParams) -> Result<Option<GraphNode>> {
     let conn = storage::open_db(db_path)?;
-    let node = queries::get_node(&conn, &params.symbol)?;
+    let node = queries::resolve_symbol(&conn, &params.symbol)?;
     Ok(node)
 }
 
@@ -130,7 +102,7 @@ pub fn get_node_detailed(
     params: NodeParams,
 ) -> Result<Option<NodeDetailedResponse>> {
     let conn = storage::open_db(db_path)?;
-    let node = match queries::get_node(&conn, &params.symbol)? {
+    let node = match queries::resolve_symbol(&conn, &params.symbol)? {
         Some(n) => n,
         None => return Ok(None),
     };
@@ -205,12 +177,13 @@ pub struct EdgesResponse {
 /// Find transitive callers of a symbol via BFS.
 pub fn get_transitive_callers(db_path: &Path, symbol: &str, limit: u32) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
+    let symbol = queries::resolve_symbol_id(&conn, symbol)?;
     let mut visited = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     let mut all_edges = Vec::new();
 
-    queue.push_back(symbol.to_string());
-    visited.insert(symbol.to_string());
+    queue.push_back(symbol.clone());
+    visited.insert(symbol);
 
     while let Some(current) = queue.pop_front() {
         if all_edges.len() >= limit as usize {
@@ -240,7 +213,8 @@ pub fn get_transitive_callers(db_path: &Path, symbol: &str, limit: u32) -> Resul
 pub fn get_callers(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(30);
-    let edges = queries::get_callers(&conn, &params.symbol, limit)?;
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
+    let edges = queries::get_callers(&conn, &symbol, limit)?;
     let count = edges.len();
     Ok(EdgesResponse { edges, count })
 }
@@ -249,7 +223,8 @@ pub fn get_callers(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
 pub fn get_callees(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(30);
-    let edges = queries::get_callees(&conn, &params.symbol, limit)?;
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
+    let edges = queries::get_callees(&conn, &symbol, limit)?;
     let count = edges.len();
     Ok(EdgesResponse { edges, count })
 }
@@ -258,7 +233,8 @@ pub fn get_callees(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
 pub fn get_references(db_path: &Path, params: CallersParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(50);
-    let edges = queries::get_references(&conn, &params.symbol, limit)?;
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
+    let edges = queries::get_references(&conn, &symbol, limit)?;
     let count = edges.len();
     Ok(EdgesResponse { edges, count })
 }
@@ -288,9 +264,10 @@ pub fn get_hierarchy(db_path: &Path, params: HierarchyParams) -> Result<Hierarch
     let direction = params.direction.as_deref().unwrap_or("subtypes");
     let limit = params.depth.unwrap_or(3) * 50; // approximate
 
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = match direction {
-        "supertypes" => queries::get_supertypes(&conn, &params.symbol, limit)?,
-        _ => queries::get_subtypes(&conn, &params.symbol, limit)?,
+        "supertypes" => queries::get_supertypes(&conn, &symbol, limit)?,
+        _ => queries::get_subtypes(&conn, &symbol, limit)?,
     };
 
     // Resolve target nodes
@@ -338,22 +315,6 @@ pub fn get_files(db_path: &Path, params: FilesParams) -> Result<FilesResponse> {
     Ok(FilesResponse { files, count })
 }
 
-/// Resolve a symbol name to its ID. If the input looks like an ID (contains "::"), return as-is.
-/// Otherwise, search by name and return the first match.
-fn resolve_symbol_id(db_path: &Path, symbol: &str) -> Result<String> {
-    if symbol.contains("::") {
-        return Ok(symbol.to_string());
-    }
-    let conn = storage::open_db(db_path)?;
-    let results = queries::search_nodes(&conn, symbol, 1)
-        .or_else(|_| queries::find_nodes_by_name(&conn, symbol, None, 1))?;
-    results
-        .into_iter()
-        .next()
-        .map(|n| n.id)
-        .ok_or_else(|| anyhow::anyhow!("symbol not found: {symbol}"))
-}
-
 // --- v0.2: Extensions ---
 
 /// Parameters for extension lookup.
@@ -367,7 +328,8 @@ pub struct ExtensionsParams {
 pub fn get_extensions(db_path: &Path, params: ExtensionsParams) -> Result<EdgesResponse> {
     let conn = storage::open_db(db_path)?;
     let limit = params.limit.unwrap_or(50);
-    let edges = queries::get_extensions(&conn, &params.symbol, limit)?;
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
+    let edges = queries::get_extensions(&conn, &symbol, limit)?;
     let count = edges.len();
     Ok(EdgesResponse { edges, count })
 }
@@ -389,7 +351,8 @@ pub fn get_conformances(db_path: &Path, params: ConformancesParams) -> Result<Ed
     let conn = storage::open_db(db_path)?;
     let direction = params.direction.as_deref().unwrap_or("conforms");
     let limit = params.limit.unwrap_or(50);
-    let edges = queries::get_conformances(&conn, &params.symbol, direction, limit)?;
+    let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
+    let edges = queries::get_conformances(&conn, &symbol, direction, limit)?;
     let count = edges.len();
     Ok(EdgesResponse { edges, count })
 }
@@ -432,8 +395,12 @@ pub struct ImpactParams {
 /// Analyze the blast radius of changing a symbol.
 pub fn get_impact(db_path: &Path, params: ImpactParams) -> Result<analysis::impact::ImpactResult> {
     let depth = params.depth.unwrap_or(3);
-    // Resolve name to ID if needed
-    let symbol_id = resolve_symbol_id(db_path, &params.symbol)?;
+    // Resolve name or USR to a node ID
+    let conn = storage::open_db(db_path)?;
+    let symbol_id = queries::resolve_symbol(&conn, &params.symbol)?
+        .map(|n| n.id)
+        .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", params.symbol))?;
+    drop(conn);
     let result = analysis::impact::analyze_impact(db_path, &symbol_id, depth)?;
     Ok(result)
 }

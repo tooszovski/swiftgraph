@@ -387,3 +387,108 @@ fn status_mode_reflects_how_the_db_was_built() {
     assert_eq!(resp.mode, "tree-sitter");
     assert_eq!(resp.index_strategy.as_deref(), Some("tree-sitter"));
 }
+
+// --- Symbol resolution (name or USR) ---
+
+#[test]
+fn callers_and_callees_accept_a_symbol_name() {
+    let (_dir, db_path) = setup_test_db();
+    let by_name = navigation::get_callers(
+        &db_path,
+        navigation::CallersParams {
+            symbol: "fetchUser".into(),
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(by_name.count, 1);
+    assert_eq!(by_name.edges[0].source, "usr:loadUsers");
+
+    let callees = navigation::get_callees(
+        &db_path,
+        navigation::CallersParams {
+            symbol: "loadUsers".into(),
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(callees.count, 1);
+}
+
+#[test]
+fn hierarchy_and_conformances_accept_a_symbol_name() {
+    let (_dir, db_path) = setup_test_db();
+    let conf = navigation::get_conformances(
+        &db_path,
+        navigation::ConformancesParams {
+            symbol: "NetworkUserService".into(),
+            direction: None,
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(conf.count, 1);
+
+    let hier = navigation::get_hierarchy(
+        &db_path,
+        navigation::HierarchyParams {
+            symbol: "UserService".into(),
+            direction: Some("subtypes".into()),
+            depth: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(hier.related.len(), 1);
+    assert_eq!(hier.related[0].name, "NetworkUserService");
+
+    let refs = navigation::get_references(
+        &db_path,
+        navigation::CallersParams {
+            symbol: "User".into(),
+            limit: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(refs.count, 1, "exact name must win over the prefix 'User*'");
+}
+
+#[test]
+fn impact_accepts_a_real_usr() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("db.sqlite");
+    let conn = storage::open_db(&db_path).unwrap();
+    queries::upsert_file(&conn, "A.swift", "h", 2).unwrap();
+    let a = make_node("s:3App1AC", "A", "App.A", SymbolKind::Class, "A.swift");
+    let b = make_node("s:3App1BC", "B", "App.B", SymbolKind::Class, "A.swift");
+    queries::upsert_node(&conn, &a).unwrap();
+    queries::upsert_node(&conn, &b).unwrap();
+    queries::insert_edge(&conn, &make_edge("s:3App1BC", "s:3App1AC", EdgeKind::Calls)).unwrap();
+    drop(conn);
+
+    let result = navigation::get_impact(
+        &db_path,
+        navigation::ImpactParams {
+            symbol: "s:3App1AC".into(),
+            depth: Some(2),
+        },
+    )
+    .expect("a USR with single colons must resolve");
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("s:3App1BC"), "{json}");
+}
+
+#[test]
+fn context_finds_seed_symbols_by_prefix() {
+    let (_dir, db_path) = setup_test_db();
+    let result = navigation::get_context(
+        &db_path,
+        navigation::ContextParams {
+            task: "change how we load users".into(),
+            max_nodes: Some(10),
+            include_tests: Some(true),
+        },
+    )
+    .unwrap();
+    let json = serde_json::to_string(&result).unwrap();
+    assert!(json.contains("usr:loadUsers"), "{json}");
+}

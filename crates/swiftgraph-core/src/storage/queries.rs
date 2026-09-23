@@ -512,6 +512,98 @@ pub fn find_nodes_by_name_pattern(
     rows.collect()
 }
 
+/// Build an FTS5 query from plain user text: every whitespace-separated
+/// token becomes a quoted prefix term (`"tok"*`), ANDed together. Quoting
+/// keeps characters like `.`, `:` or `-` from being parsed as FTS syntax.
+pub fn fts_prefix_query(text: &str) -> String {
+    text.split_whitespace()
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Search symbols with the fallback chain FTS5 prefix → trigram substring →
+/// `LIKE`, optionally filtered by kind. Terms containing `*` or `"` are passed
+/// to FTS5 verbatim (user-supplied syntax); FTS errors fall through to the
+/// next stage instead of failing.
+pub fn search_with_fallback(
+    conn: &Connection,
+    query: &str,
+    kind: Option<&str>,
+    limit: u32,
+) -> SqlResult<Vec<GraphNode>> {
+    let query = query.trim();
+    let fts_query = if query.contains('*') || query.contains('"') {
+        query.to_string()
+    } else {
+        fts_prefix_query(query)
+    };
+    let keep = |mut v: Vec<GraphNode>| {
+        if let Some(k) = kind {
+            v.retain(|n| n.kind.as_str() == k);
+        }
+        v
+    };
+
+    let results = keep(search_nodes(conn, &fts_query, limit).unwrap_or_default());
+    if !results.is_empty() {
+        return Ok(results);
+    }
+    let results = keep(search_nodes_trigram(conn, query, limit).unwrap_or_default());
+    if !results.is_empty() {
+        return Ok(results);
+    }
+    find_nodes_by_name(conn, query, kind, limit)
+}
+
+/// Resolve a user-supplied symbol reference (USR / node ID or a name) to a node.
+///
+/// Order: exact node ID → exact name or qualified name (Index Store function
+/// names such as `load(id:)` also match `load`) → [`search_with_fallback`].
+/// Among several exact matches, types win over members, then the first by
+/// file and line, so the choice is deterministic.
+pub fn resolve_symbol(conn: &Connection, input: &str) -> SqlResult<Option<GraphNode>> {
+    let input = input.trim();
+    if input.is_empty() {
+        return Ok(None);
+    }
+    if let Some(node) = get_node(conn, input)? {
+        return Ok(Some(node));
+    }
+
+    let mut stmt = conn.prepare(
+        r#"SELECT id, name, qualified_name, kind, sub_kind,
+                  file, line, col, end_line, end_col,
+                  signature, attributes, access_level, container_usr,
+                  doc_comment, lines, complexity, parameter_count
+           FROM nodes
+           WHERE name = ?1 OR qualified_name = ?1 OR substr(name, 1, length(?1) + 1) = ?1 || '('
+           ORDER BY CASE kind
+                      WHEN 'class' THEN 0 WHEN 'struct' THEN 0 WHEN 'enum' THEN 0
+                      WHEN 'protocol' THEN 0 WHEN 'actor' THEN 0
+                      WHEN 'extension' THEN 2 ELSE 1 END,
+                    CASE WHEN name = ?1 THEN 0 ELSE 1 END,
+                    file, line, id
+           LIMIT 1"#,
+    )?;
+    let mut rows = stmt.query_map(params![input], row_to_node)?;
+    if let Some(row) = rows.next() {
+        return Ok(Some(row?));
+    }
+
+    Ok(search_with_fallback(conn, input, None, 1)?
+        .into_iter()
+        .next())
+}
+
+/// Resolve like [`resolve_symbol`] but return the ID, falling back to the
+/// input unchanged when nothing matches (queries then simply return nothing).
+pub fn resolve_symbol_id(conn: &Connection, input: &str) -> SqlResult<String> {
+    Ok(resolve_symbol(conn, input)?
+        .map(|n| n.id)
+        .unwrap_or_else(|| input.to_string()))
+}
+
 /// Get distinct files referenced by edges of given nodes.
 pub fn get_affected_files(conn: &Connection, node_ids: &[String]) -> SqlResult<Vec<String>> {
     if node_ids.is_empty() {

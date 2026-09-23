@@ -61,17 +61,7 @@ pub fn analyze_concurrency(db_path: &Path, params: ConcurrencyParams) -> Result<
     let conn = storage::open_db(db_path)?;
 
     // Resolve symbol
-    let node = queries::get_node(&conn, &params.symbol)?
-        .or_else(|| {
-            queries::search_nodes(&conn, &params.symbol, 1)
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        })
-        .or_else(|| {
-            queries::find_nodes_by_name(&conn, &params.symbol, None, 1)
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        })
+    let node = queries::resolve_symbol(&conn, &params.symbol)?
         .ok_or_else(|| anyhow::anyhow!("symbol not found: {}", params.symbol))?;
 
     let isolation = detect_isolation(&node);

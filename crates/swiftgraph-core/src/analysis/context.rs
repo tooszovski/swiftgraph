@@ -60,9 +60,8 @@ pub fn build_context(
     let mut seen_ids: HashSet<String> = HashSet::new();
 
     for keyword in &keywords {
-        // Try FTS5 first
-        let results = queries::search_nodes(&conn, keyword, 10)
-            .or_else(|_| queries::find_nodes_by_name_pattern(&conn, keyword, 10))?;
+        // Prefix FTS5 → trigram → LIKE, same chain as swiftgraph_search
+        let results = queries::search_with_fallback(&conn, keyword, None, 10)?;
 
         for node in results {
             if seen_ids.insert(node.id.clone()) {

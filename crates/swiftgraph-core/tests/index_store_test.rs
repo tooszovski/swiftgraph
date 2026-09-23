@@ -141,3 +141,36 @@ fn reader_extracts_symbols_from_real_store() {
         .iter()
         .any(|e| e.kind == swiftgraph_core::graph::EdgeKind::Calls));
 }
+
+#[test]
+fn conformance_edges_point_from_type_to_protocol() {
+    use swiftgraph_core::graph::EdgeKind;
+    use swiftgraph_core::index_store::{ffi::IndexStoreLib, reader};
+    let root = fixture_or_skip!();
+    let Ok(lib) = IndexStoreLib::load() else {
+        return;
+    };
+    let store = swiftgraph_core::project::detect_project(&root)
+        .unwrap()
+        .index_store_path
+        .unwrap();
+    let data = reader::read_index_store(&lib, &store).unwrap();
+    let usr = |name: &str| {
+        data.nodes
+            .iter()
+            .find(|n| n.name == name)
+            .map(|n| n.id.clone())
+            .unwrap()
+    };
+    let (store_usr, proto_usr) = (usr("MemoryStore"), usr("UserStore"));
+    assert!(
+        data.edges.iter().any(|e| e.kind == EdgeKind::ConformsTo
+            && e.source == store_usr
+            && e.target == proto_usr),
+        "expected MemoryStore -conformsTo-> UserStore"
+    );
+    assert!(!data
+        .edges
+        .iter()
+        .any(|e| e.kind == EdgeKind::InheritsFrom && e.source == proto_usr));
+}

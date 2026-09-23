@@ -194,12 +194,13 @@ fn process_occurrence(
             push(rel_usr, usr, EdgeKind::Calls);
         }
         if rel.roles & symbol_role::REL_BASEOF != 0 {
-            let kind = if rel.symbol.kind == SymbolKind::Protocol as u32 {
+            // "S baseOf R": the occurrence symbol S is the base, R the subtype.
+            let kind = if occ.symbol.kind == SymbolKind::Protocol as u32 {
                 EdgeKind::ConformsTo
             } else {
                 EdgeKind::InheritsFrom
             };
-            push(usr, rel_usr, kind);
+            push(rel_usr, usr, kind);
         }
         if rel.roles & symbol_role::REL_OVERRIDEOF != 0 {
             push(usr, rel_usr, EdgeKind::Overrides);

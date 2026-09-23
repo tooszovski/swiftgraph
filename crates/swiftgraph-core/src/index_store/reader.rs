@@ -145,6 +145,19 @@ const ACCESSOR_PREFIXES: &[&str] = &[
     "unsafeMutableAddress:",
 ];
 
+/// Declarations worth a node: not parameters, locals, unnamed symbols or
+/// declarations synthesized by macro expansion (their USRs carry
+/// `fM<kind>_` discriminators, e.g. `@Observable` or `@Test` expansions).
+fn is_program_symbol(occ: &Occurrence) -> bool {
+    const MACRO_MARKERS: &[&str] = &[
+        "fMm_", "fMu_", "fMp_", "fMe_", "fMa_", "fMr_", "fMf_", "fMs_",
+    ];
+    !occ.symbol.name.is_empty()
+        && occ.symbol.kind != SymbolKind::Parameter as u32
+        && occ.symbol.properties & symbol_property::LOCAL == 0
+        && !MACRO_MARKERS.iter().any(|m| occ.symbol.usr.contains(m))
+}
+
 fn is_accessor(occ: &Occurrence) -> bool {
     occ.relations
         .iter()
@@ -177,7 +190,7 @@ fn process_occurrence(
             data.aliases
                 .insert(usr.clone(), property.symbol.usr.clone());
         }
-    } else if declares && !seen.contains_key(usr) {
+    } else if declares && !seen.contains_key(usr) && is_program_symbol(occ) {
         // Definitions/declarations become nodes
         let node = GraphNode {
             id: usr.clone(),

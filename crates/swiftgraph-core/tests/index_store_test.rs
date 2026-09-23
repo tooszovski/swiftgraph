@@ -307,3 +307,45 @@ fn hybrid_nodes_are_stitched_with_tree_sitter_details() {
         .unwrap();
     assert_eq!(dupes, 0);
 }
+
+#[test]
+fn dead_code_uses_index_store_occurrences() {
+    let root = fixture_or_skip!();
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("db.sqlite");
+    let store = swiftgraph_core::project::detect_project(&root)
+        .unwrap()
+        .index_store_path;
+    pipeline::index_directory_with_options(
+        &db,
+        &root,
+        true,
+        store.as_deref(),
+        &pipeline::SwiftSyntaxMode::Disabled,
+    )
+    .unwrap();
+    let conn = storage::open_db(&db).unwrap();
+    let dead =
+        swiftgraph_core::analysis::dead_code::find_dead_code_from_conn(&conn, None, false, 1000)
+            .unwrap();
+    let names: Vec<&str> = dead.dead_symbols.iter().map(|s| s.name.as_str()).collect();
+    // Members are checked, not just top-level symbols
+    for expected in ["unusedHelper()", "reset()"] {
+        assert!(names.contains(&expected), "{expected} missing: {names:?}");
+    }
+    // Used through reads, writes, type annotations, Codable, or as a witness
+    for alive in [
+        "value",
+        "storage",
+        "Tag",
+        "makeCounter(tag:)",
+        "theme",
+        "CodingKeys",
+        "users",
+        "hits",
+    ] {
+        assert!(!names.contains(&alive), "{alive} reported dead: {names:?}");
+    }
+    // Members of a dead type are not listed separately
+    assert!(!names.contains(&"refresh()"), "{names:?}");
+}

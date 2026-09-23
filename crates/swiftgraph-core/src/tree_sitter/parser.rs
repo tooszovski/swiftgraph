@@ -71,6 +71,8 @@ struct Container<'a> {
     id: &'a str,
     /// Qualified name when the container is a type or an extension.
     type_path: Option<&'a str>,
+    /// Access level members get without a modifier (`public extension`).
+    default_access: Option<AccessLevel>,
 }
 
 fn visit_node(
@@ -120,7 +122,9 @@ fn visit_node(
                 },
                 signature: extract_signature(&node, source),
                 attributes: extract_attributes(&node, source),
-                access_level: extract_access_level(&node, source),
+                access_level: explicit_access_level(&node, source)
+                    .or(container.and_then(|c| c.default_access))
+                    .unwrap_or_default(),
                 container_usr: container.map(|c| c.id.to_string()),
                 doc_comment: None,
                 metrics: None,
@@ -151,9 +155,19 @@ fn visit_node(
             }
 
             // Recurse into children with this as container
+            // `public extension X { var y }`: y is public; members of a
+            // `private extension` are fileprivate
+            let default_access = (symbol_kind == SymbolKind::Extension)
+                .then(|| explicit_access_level(&node, source))
+                .flatten()
+                .map(|a| match a {
+                    AccessLevel::Private => AccessLevel::FilePrivate,
+                    other => other,
+                });
             let child = Container {
                 id: &id,
                 type_path: is_type.then_some(qualified.as_str()),
+                default_access,
             };
             for i in 0..node.child_count() {
                 if let Some(c) = node.child(i) {
@@ -907,7 +921,8 @@ fn extract_attributes(node: &Node, source: &str) -> Vec<String> {
     attrs
 }
 
-fn extract_access_level(node: &Node, source: &str) -> AccessLevel {
+/// Access level written on the declaration, if any.
+fn explicit_access_level(node: &Node, source: &str) -> Option<AccessLevel> {
     for m in modifier_nodes(node) {
         if !matches!(m.kind(), "visibility_modifier" | "modifier") {
             continue;
@@ -921,16 +936,16 @@ fn extract_access_level(node: &Node, source: &str) -> AccessLevel {
             continue;
         }
         match text.trim() {
-            "open" => return AccessLevel::Open,
-            "public" => return AccessLevel::Public,
-            "package" => return AccessLevel::Package,
-            "internal" => return AccessLevel::Internal,
-            "fileprivate" => return AccessLevel::FilePrivate,
-            "private" => return AccessLevel::Private,
+            "open" => return Some(AccessLevel::Open),
+            "public" => return Some(AccessLevel::Public),
+            "package" => return Some(AccessLevel::Package),
+            "internal" => return Some(AccessLevel::Internal),
+            "fileprivate" => return Some(AccessLevel::FilePrivate),
+            "private" => return Some(AccessLevel::Private),
             _ => {}
         }
     }
-    AccessLevel::Internal
+    None
 }
 
 fn extract_inheritance(
@@ -1095,6 +1110,27 @@ mod tests {
             .iter()
             .any(|a| a == "@Published"));
         assert_eq!(find(&r, "name").kind, SymbolKind::Property);
+    }
+
+    #[test]
+    fn members_of_an_extension_inherit_its_access_level() {
+        let r = parse(
+            "public extension ButtonStyle {\n\
+                 static var primary: Int { 1 }\n\
+                 private static var hidden: Int { 2 }\n\
+             }\n\
+             private extension String {\n\
+                 var shouted: String { uppercased() }\n\
+             }\n\
+             extension Int {\n\
+                 var double: Int { self * 2 }\n\
+             }\n",
+        );
+        assert_eq!(find(&r, "primary").access_level, AccessLevel::Public);
+        assert_eq!(find(&r, "hidden").access_level, AccessLevel::Private);
+        // `private extension` members are fileprivate
+        assert_eq!(find(&r, "shouted").access_level, AccessLevel::FilePrivate);
+        assert_eq!(find(&r, "double").access_level, AccessLevel::Internal);
     }
 
     #[test]

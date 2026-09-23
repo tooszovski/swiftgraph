@@ -833,6 +833,25 @@ fn resolve_calls(
             }
         }
     }
+    // Implementations of project protocol requirements (tree-sitter
+    // declarations only; the Index Store records these itself)
+    tx.execute(
+        "DELETE FROM edges WHERE kind = 'overrides' AND source LIKE 'ts::%'",
+        [],
+    )?;
+    {
+        let mut insert = tx.prepare(
+            "INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit, ambiguous)
+             VALUES (?1, ?2, 'overrides', ?3, ?4, NULL, 1, 0)",
+        )?;
+        for (implementation, requirement, file, line) in resolver
+            .requirement_implementations()
+            .into_iter()
+            .filter(|(i, _, _, _)| i.starts_with("ts::"))
+        {
+            insert.execute(rusqlite::params![implementation, requirement, file, line])?;
+        }
+    }
     tx.commit()?;
     Ok(stats)
 }

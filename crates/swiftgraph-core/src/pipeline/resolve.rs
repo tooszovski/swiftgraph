@@ -387,6 +387,9 @@ struct Target {
     private: bool,
     /// Parameter labels of a function (`_` = unlabeled), when known.
     labels: Option<Vec<String>>,
+    /// Kind of the containing declaration (`protocol`, `extension`, ...).
+    container_kind: Option<String>,
+    line: u32,
 }
 
 /// Outcome of resolving one call site.
@@ -417,6 +420,8 @@ pub(crate) struct Resolver {
     member_types: HashMap<String, HashMap<String, String>>,
     library: HashSet<&'static str>,
     max_candidates: usize,
+    /// Names of protocols declared in the project.
+    protocols: HashSet<String>,
 }
 
 const TYPE_KINDS: &[&str] = &["class", "struct", "enum", "protocol", "extension"];
@@ -451,12 +456,13 @@ impl Resolver {
             names: HashSet::new(),
             member_types: HashMap::new(),
             library: LIBRARY_NAMES.iter().copied().collect(),
+            protocols: HashSet::new(),
             max_candidates: config.max_candidates.max(1),
         };
 
         let mut stmt = conn.prepare(
             "SELECT n.id, n.name, n.qualified_name, n.kind, n.file, n.access_level,
-                    c.kind, c.name
+                    c.kind, c.name, n.line
              FROM nodes n LEFT JOIN nodes c ON c.id = n.container_usr
              WHERE n.kind IN ('function', 'method', 'property', 'class', 'struct', 'enum',
                               'protocol', 'typeAlias')
@@ -472,10 +478,15 @@ impl Resolver {
                 r.get::<_, String>(5)?,
                 r.get::<_, Option<String>>(6)?,
                 r.get::<_, Option<String>>(7)?,
+                r.get::<_, u32>(8)?,
             ))
         })?;
         for row in rows {
-            let (id, name, qualified, kind, file, access, container_kind, container_name) = row?;
+            let (id, name, qualified, kind, file, access, container_kind, container_name, line) =
+                row?;
+            if kind == "protocol" {
+                resolver.protocols.insert(base_name(&name).to_string());
+            }
             let base = base_name(&name).to_string();
             let labels = matches!(kind.as_str(), "function" | "method")
                 .then(|| {
@@ -494,6 +505,8 @@ impl Resolver {
                 file,
                 private: matches!(access.as_str(), "Private" | "FilePrivate"),
                 labels,
+                container_kind: container_kind.clone(),
+                line,
             });
             resolver.names.insert(base.clone());
             match (container_kind.as_deref(), container_name) {
@@ -538,6 +551,42 @@ impl Resolver {
                 }
             }
         }
+        // `typealias Endpoint = Pinging & Naming`: members of the composed
+        // protocols are members of the alias
+        let mut stmt =
+            conn.prepare("SELECT name, signature FROM nodes WHERE kind = 'typeAlias'")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (alias, signature) = row?;
+            let Some(aliased) = signature.as_deref().and_then(|s| s.split_once('=')) else {
+                continue;
+            };
+            let parts: Vec<String> = aliased
+                .1
+                .split('&')
+                .map(|p| {
+                    p.trim()
+                        .trim_start_matches("any ")
+                        .split(['<', ' ', '{'])
+                        .next()
+                        .unwrap_or("")
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("")
+                        .to_string()
+                })
+                .filter(|p| p.chars().next().is_some_and(char::is_uppercase))
+                .collect();
+            let list = resolver.supertypes.entry(alias).or_default();
+            for part in parts {
+                if !list.contains(&part) {
+                    list.push(part);
+                }
+            }
+        }
+
         let mut stmt = conn.prepare("SELECT owner, member, type_name FROM member_types")?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -619,6 +668,63 @@ impl Resolver {
             .get(ty)
             .map(|v| v.iter().map(String::as_str).collect())
             .unwrap_or_default()
+    }
+
+    /// `(implementation, requirement, file, line)` for every member of a
+    /// project type that satisfies a requirement of a project protocol the
+    /// type conforms to (directly, in an extension, or through supertypes),
+    /// and for default implementations in protocol extensions. Matched by
+    /// name and argument labels.
+    pub(crate) fn requirement_implementations(&self) -> Vec<(String, String, String, u32)> {
+        let mut out = Vec::new();
+        let is_requirement =
+            |i: &usize| self.targets[*i].container_kind.as_deref() == Some("protocol");
+        let same_signature = |a: &Target, b: &Target| a.name == b.name && a.labels == b.labels;
+        let mut types: Vec<&String> = self.members.keys().collect();
+        types.sort();
+        for ty in types {
+            let own = &self.members[ty];
+            // Protocols reached from this type, including itself for
+            // default implementations in its extensions
+            let mut seen: HashSet<&str> = HashSet::new();
+            let mut stack: Vec<&str> = vec![ty.as_str()];
+            let mut protocols: Vec<&str> = Vec::new();
+            while let Some(t) = stack.pop() {
+                if !seen.insert(t) {
+                    continue;
+                }
+                if self.protocols.contains(t) {
+                    protocols.push(t);
+                }
+                stack.extend(self.parents(t));
+            }
+            protocols.sort();
+            for protocol in protocols {
+                let Some(requirements) = self.members.get(protocol) else {
+                    continue;
+                };
+                for (name, reqs) in requirements {
+                    let Some(candidates) = own.get(name) else {
+                        continue;
+                    };
+                    for req in reqs.iter().filter(|i| is_requirement(i)) {
+                        for imp in candidates.iter().filter(|i| !is_requirement(i)) {
+                            let (r, i) = (&self.targets[*req], &self.targets[*imp]);
+                            // A protocol's own extension provides defaults only for itself
+                            if protocol != ty && i.container_kind.as_deref() == Some("protocol") {
+                                continue;
+                            }
+                            if same_signature(r, i) && r.id != i.id {
+                                out.push((i.id.clone(), r.id.clone(), i.file.clone(), i.line));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 
     /// Whether the call could resolve to project code now or after an edit:
@@ -800,6 +906,8 @@ mod tests {
             file: "A.swift".into(),
             private: false,
             labels: Some(labels.iter().map(|s| s.to_string()).collect()),
+            container_kind: None,
+            line: 1,
         }
     }
 

@@ -172,6 +172,10 @@ pub struct CallersParams {
 pub struct EdgesResponse {
     pub edges: Vec<GraphEdge>,
     pub count: usize,
+    /// For `callers`: calls to protocol requirements the symbol implements,
+    /// i.e. calls that reach it through the protocol.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub via_protocol: Vec<GraphEdge>,
 }
 
 /// Find transitive callers of a symbol via BFS.
@@ -206,6 +210,7 @@ pub fn get_transitive_callers(db_path: &Path, symbol: &str, limit: u32) -> Resul
     Ok(EdgesResponse {
         edges: all_edges,
         count,
+        via_protocol: Vec::new(),
     })
 }
 
@@ -216,7 +221,12 @@ pub fn get_callers(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
     let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = queries::get_callers(&conn, &symbol, limit)?;
     let count = edges.len();
-    Ok(EdgesResponse { edges, count })
+    let via_protocol = queries::get_protocol_callers(&conn, &symbol, limit)?;
+    Ok(EdgesResponse {
+        edges,
+        count,
+        via_protocol,
+    })
 }
 
 /// Find all callees of a symbol (outgoing `calls` edges).
@@ -226,7 +236,11 @@ pub fn get_callees(db_path: &Path, params: CallersParams) -> Result<EdgesRespons
     let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = queries::get_callees(&conn, &symbol, limit)?;
     let count = edges.len();
-    Ok(EdgesResponse { edges, count })
+    Ok(EdgesResponse {
+        edges,
+        count,
+        via_protocol: Vec::new(),
+    })
 }
 
 /// Find all references to a symbol (any incoming edge kind).
@@ -236,7 +250,11 @@ pub fn get_references(db_path: &Path, params: CallersParams) -> Result<EdgesResp
     let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = queries::get_references(&conn, &symbol, limit)?;
     let count = edges.len();
-    Ok(EdgesResponse { edges, count })
+    Ok(EdgesResponse {
+        edges,
+        count,
+        via_protocol: Vec::new(),
+    })
 }
 
 /// Parameters for type hierarchy traversal.
@@ -331,7 +349,11 @@ pub fn get_extensions(db_path: &Path, params: ExtensionsParams) -> Result<EdgesR
     let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = queries::get_extensions(&conn, &symbol, limit)?;
     let count = edges.len();
-    Ok(EdgesResponse { edges, count })
+    Ok(EdgesResponse {
+        edges,
+        count,
+        via_protocol: Vec::new(),
+    })
 }
 
 // --- v0.2: Conformances ---
@@ -354,7 +376,11 @@ pub fn get_conformances(db_path: &Path, params: ConformancesParams) -> Result<Ed
     let symbol = queries::resolve_symbol_id(&conn, &params.symbol)?;
     let edges = queries::get_conformances(&conn, &symbol, direction, limit)?;
     let count = edges.len();
-    Ok(EdgesResponse { edges, count })
+    Ok(EdgesResponse {
+        edges,
+        count,
+        via_protocol: Vec::new(),
+    })
 }
 
 // --- v0.2: Context ---

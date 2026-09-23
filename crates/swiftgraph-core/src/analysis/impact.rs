@@ -40,6 +40,9 @@ pub struct ImpactResult {
     /// Possible direct callers through ambiguous call edges (receiver type
     /// unknown). Not counted in the impact numbers.
     pub ambiguous_callers: Vec<String>,
+    /// Callers of protocol requirements this symbol implements: calls that
+    /// reach it through the protocol. Counted as direct dependents.
+    pub via_protocol: Vec<String>,
 }
 
 /// Breakdown of impact by relationship type.
@@ -100,6 +103,21 @@ pub fn analyze_impact_from_conn(
             _ => {}
         }
     }
+
+    // Calls through protocol requirements this symbol implements
+    let mut via_protocol: Vec<String> = Vec::new();
+    for edge in queries::get_all_outgoing(conn, symbol_id, 100)? {
+        if edge.kind.as_str() != "overrides" {
+            continue;
+        }
+        for call in queries::get_callers(conn, &edge.target, 500)? {
+            if !call.ambiguous && direct_ids.insert(call.source.clone()) {
+                via_protocol.push(call.source.clone());
+            }
+        }
+    }
+    via_protocol.sort();
+    via_protocol.dedup();
 
     let direct_impact = direct_ids.len();
 
@@ -173,6 +191,7 @@ pub fn analyze_impact_from_conn(
         risk_level,
         breakdown,
         ambiguous_callers,
+        via_protocol,
     })
 }
 

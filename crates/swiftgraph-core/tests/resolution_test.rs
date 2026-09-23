@@ -249,3 +249,65 @@ fn property_types_declared_in_other_files_type_the_receiver() {
         ]
     );
 }
+
+#[test]
+fn implementations_override_protocol_requirements() {
+    let (_d, conn) = indexed();
+    let overrides = |source: &str| -> Vec<String> {
+        let id = id(&conn, source, None);
+        let mut stmt = conn
+            .prepare(
+                "SELECT n.qualified_name FROM edges e JOIN nodes n ON n.id = e.target
+                 WHERE e.source = ?1 AND e.kind = 'overrides' ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    assert_eq!(
+        overrides("BaseWallet.refresh(force:)"),
+        vec!["WalletUpdating.refresh(force:)"]
+    );
+    // Conformance declared in an extension
+    assert_eq!(
+        overrides("Portfolio.sync(now:)"),
+        vec!["Syncing.sync(now:)"]
+    );
+    // Default implementation in a protocol extension
+    let defaults: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e JOIN nodes s ON s.id = e.source JOIN nodes t ON t.id = e.target
+             WHERE e.kind = 'overrides' AND s.name = 'reset' AND t.name = 'reset' AND s.id != t.id",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(defaults, 1);
+
+    // Impact of the implementation includes calls through the protocol
+    let base = id(&conn, "BaseWallet.refresh(force:)", None);
+    let impact =
+        swiftgraph_core::analysis::impact::analyze_impact_from_conn(&conn, &base, 2).unwrap();
+    let caller = id(&conn, "refreshAll(wallet:syncing:)", None);
+    assert!(
+        impact.via_protocol.contains(&caller),
+        "{:?}",
+        impact.via_protocol
+    );
+    assert!(impact.direct_impact >= 1);
+    let via = swiftgraph_core::storage::queries::get_protocol_callers(&conn, &base, 10).unwrap();
+    assert_eq!(via.len(), 1);
+    assert_eq!(via[0].source, caller);
+}
+
+#[test]
+fn protocol_compositions_through_typealiases_are_followed() {
+    let (_d, conn) = indexed();
+    let check = id(&conn, "check(endpoint:)", None);
+    assert_eq!(confident(&conn, &check), vec!["Pinging.ping()"]);
+    let server = id(&conn, "Server.ping()", None);
+    let via = swiftgraph_core::storage::queries::get_protocol_callers(&conn, &server, 10).unwrap();
+    assert_eq!(via.len(), 1, "{via:?}");
+}

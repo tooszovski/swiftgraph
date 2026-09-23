@@ -212,6 +212,24 @@ pub fn get_callees(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<
     get_edges_by(conn, "source", symbol_id, Some("calls"), limit)
 }
 
+/// Calls into protocol requirements that `symbol_id` implements (its
+/// outgoing `overrides` edges): callers reaching it through the protocol.
+pub fn get_protocol_callers(
+    conn: &Connection,
+    symbol_id: &str,
+    limit: u32,
+) -> SqlResult<Vec<GraphEdge>> {
+    let mut stmt = conn.prepare(
+        r#"SELECT e.source, e.target, e.kind, e.file, e.line, e.col, e.is_implicit, e.ambiguous
+           FROM edges o JOIN edges e ON e.target = o.target
+           WHERE o.source = ?1 AND o.kind = 'overrides' AND e.kind = 'calls'
+           ORDER BY e.file, e.line, e.source
+           LIMIT ?2"#,
+    )?;
+    let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
+    rows.collect()
+}
+
 /// Get edges where target matches (incoming edges).
 pub fn get_callers(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
     get_edges_by(conn, "target", symbol_id, Some("calls"), limit)
@@ -663,21 +681,23 @@ pub fn get_nodes_by_path_prefix(
 }
 
 /// Distinct (source_file, target_file) pairs of non-ambiguous cross-file
-/// edges, at most `limit`.
+/// edges, at most `limit`. Implementations of protocol requirements
+/// (`overrides`) are a conformance, not a use, and are left out.
 pub fn get_cross_file_edges(
     conn: &Connection,
     path_filter: Option<&str>,
     limit: u32,
 ) -> SqlResult<Vec<(String, String)>> {
-    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
-        if let Some(prefix) = path_filter {
-            let pattern = format!("{prefix}%");
-            (
+    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(prefix) =
+        path_filter
+    {
+        let pattern = format!("{prefix}%");
+        (
                 "SELECT DISTINCT n1.file, n2.file \
              FROM edges e \
              JOIN nodes n1 ON e.source = n1.id \
              JOIN nodes n2 ON e.target = n2.id \
-             WHERE e.ambiguous = 0 AND n1.file LIKE ?1 AND n2.file LIKE ?1 AND n1.file != n2.file \
+             WHERE e.ambiguous = 0 AND e.kind != 'overrides' AND n1.file LIKE ?1 AND n2.file LIKE ?1 AND n1.file != n2.file \
              LIMIT ?2"
                     .to_string(),
                 vec![
@@ -685,18 +705,18 @@ pub fn get_cross_file_edges(
                     Box::new(limit),
                 ],
             )
-        } else {
-            (
-                "SELECT DISTINCT n1.file, n2.file \
+    } else {
+        (
+            "SELECT DISTINCT n1.file, n2.file \
              FROM edges e \
              JOIN nodes n1 ON e.source = n1.id \
              JOIN nodes n2 ON e.target = n2.id \
-             WHERE e.ambiguous = 0 AND n1.file != n2.file \
+             WHERE e.ambiguous = 0 AND e.kind != 'overrides' AND n1.file != n2.file \
              LIMIT ?1"
-                    .to_string(),
-                vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql>],
-            )
-        };
+                .to_string(),
+            vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql>],
+        )
+    };
     let mut stmt = conn.prepare(&sql)?;
     let params_refs: Vec<&dyn rusqlite::types::ToSql> =
         params_vec.iter().map(|p| p.as_ref()).collect();

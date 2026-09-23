@@ -130,3 +130,23 @@ fn dead_code_treats_ambiguous_and_unresolved_uses_as_possibly_used() {
     assert_eq!(one.dead_count, 2);
     assert!(one.truncated);
 }
+
+#[test]
+fn cycles_ignore_protocol_implementation_edges() {
+    let conn = graph();
+    // d implements a requirement in c; c calls d: not a dependency cycle
+    queries::insert_edge(
+        &conn,
+        &GraphEdge {
+            source: "d".into(),
+            target: "c".into(),
+            kind: EdgeKind::Overrides,
+            location: None,
+            is_implicit: true,
+            ambiguous: false,
+        },
+    )
+    .unwrap();
+    let result = cycles::detect_cycles_from_conn(&conn, None, 100, true).unwrap();
+    assert!(result.cycles.is_empty(), "{:?}", result.cycles);
+}

@@ -25,6 +25,8 @@ pub enum ComplexityError {
 pub struct SymbolComplexity {
     pub id: String,
     pub name: String,
+    /// Container and argument labels, e.g. `Session.init(token:)`.
+    pub qualified_name: String,
     pub kind: String,
     pub file: String,
     pub fan_in: u32,
@@ -84,7 +86,7 @@ pub fn analyze_complexity_from_conn(
 ) -> Result<ComplexityResult, ComplexityError> {
     let pattern = format!("{}%", path_filter.unwrap_or(""));
     let mut stmt = conn.prepare(
-        "SELECT n.id, n.name, n.kind, n.file, COALESCE(i.c, 0), COALESCE(o.c, 0)
+        "SELECT n.id, n.name, n.kind, n.file, COALESCE(i.c, 0), COALESCE(o.c, 0), n.qualified_name
          FROM nodes n
          LEFT JOIN (SELECT target AS id, COUNT(*) AS c FROM edges
                     WHERE ambiguous = 0 GROUP BY target) i ON i.id = n.id
@@ -98,6 +100,7 @@ pub fn analyze_complexity_from_conn(
         Ok(SymbolComplexity {
             id: r.get(0)?,
             name: r.get(1)?,
+            qualified_name: r.get(6)?,
             kind: r.get(2)?,
             file: r.get(3)?,
             fan_in,

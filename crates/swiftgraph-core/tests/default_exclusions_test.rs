@@ -35,6 +35,17 @@ fn manifests_and_test_targets_are_excluded_by_default() {
     }
 
     let cx = complexity::analyze_complexity_from_conn(&conn, None, 1000, "score", false).unwrap();
+    // Qualified names tell initializers and overloads apart
+    assert!(
+        cx.symbols
+            .iter()
+            .any(|s| s.name == "init" && s.qualified_name == "Session.init(token:)"),
+        "{:?}",
+        cx.symbols
+            .iter()
+            .filter(|s| s.name == "init")
+            .collect::<Vec<_>>()
+    );
     assert!(
         cx.symbols.iter().all(|s| !excluded(&s.file)),
         "{:?}",

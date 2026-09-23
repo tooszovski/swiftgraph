@@ -37,6 +37,8 @@ pub enum DeadCodeError {
 pub struct DeadSymbol {
     pub id: String,
     pub name: String,
+    /// Container and argument labels, e.g. `Session.init(token:)`.
+    pub qualified_name: String,
     pub kind: String,
     pub file: String,
     pub line: u32,
@@ -146,6 +148,7 @@ pub fn find_dead_code_from_conn(
         dead.push(DeadSymbol {
             id: node.id.clone(),
             name: node.name.clone(),
+            qualified_name: node.qualified_name.clone(),
             kind: kind.to_string(),
             file: node.location.file.clone(),
             line: node.location.line,

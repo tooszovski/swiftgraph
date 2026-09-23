@@ -306,6 +306,15 @@ fn extract_name(node: &Node, source: &str) -> Option<String> {
             if kind == "user_type" {
                 return find_type_name(&child, source);
             }
+            // For properties: `property_declaration > pattern > simple_identifier`
+            if kind == "pattern" {
+                if let Some(id) = (0..child.child_count())
+                    .filter_map(|j| child.child(j))
+                    .find(|c| c.kind() == "simple_identifier")
+                {
+                    return Some(id.utf8_text(source.as_bytes()).ok()?.to_string());
+                }
+            }
         }
     }
     None
@@ -545,6 +554,27 @@ mod tests {
         let base = find(&r, "Base");
         assert_eq!(base.access_level, AccessLevel::Open);
         assert_eq!(base.attributes.len(), 2, "{:?}", base.attributes);
+    }
+
+    #[test]
+    fn property_declarations_are_extracted() {
+        let r = parse(
+            "struct S {\n\
+                 public private(set) var count = 0\n\
+                 private static let shared = 1\n\
+                 @Published var items: [String] = []\n\
+                 let name: String\n\
+             }\n",
+        );
+        let count = find(&r, "count");
+        assert_eq!(count.kind, SymbolKind::Property);
+        assert_eq!(count.access_level, AccessLevel::Public);
+        assert_eq!(find(&r, "shared").access_level, AccessLevel::Private);
+        assert!(find(&r, "items")
+            .attributes
+            .iter()
+            .any(|a| a == "@Published"));
+        assert_eq!(find(&r, "name").kind, SymbolKind::Property);
     }
 
     #[test]

@@ -209,7 +209,7 @@ fn parameter_labels(node: &Node, source: &str) -> String {
 }
 
 /// What a call site's receiver is known to be, as far as one file tells.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Receiver {
     /// `foo()`: a member of an enclosing type, a free function or an initializer.
     Implicit,
@@ -233,7 +233,7 @@ pub enum Receiver {
 
 /// A call found by tree-sitter. Targets are resolved after indexing, when
 /// every file's declarations are in the database.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CallSite {
     /// ID of the calling declaration (function or property), or the file's
     /// `__top_level__` pseudo-node.

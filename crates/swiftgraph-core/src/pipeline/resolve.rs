@@ -621,6 +621,12 @@ impl Resolver {
             .unwrap_or_default()
     }
 
+    /// Whether the call could resolve to project code now or after an edit:
+    /// not a standard library name on a receiver of unknown type.
+    pub(crate) fn may_resolve(&self, call: &CallSite) -> bool {
+        !(matches!(call.receiver, Receiver::Unknown) && self.library.contains(call.name.as_str()))
+    }
+
     /// Whether some project declaration has this base name.
     pub(crate) fn is_declared(&self, name: &str) -> bool {
         self.names.contains(name)

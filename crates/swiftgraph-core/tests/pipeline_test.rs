@@ -197,3 +197,58 @@ fn incremental_reindex_refreshes_incoming_edges() {
     assert_eq!(callee(&conn, "run"), 1);
     assert_eq!(callee(&conn, "stop"), 1);
 }
+
+/// A same-named declaration added in a third file changes how calls in an
+/// unchanged file resolve: the unique target becomes one of two candidates.
+#[test]
+fn incremental_reindex_re_resolves_calls_when_a_same_named_symbol_appears() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("db.sqlite");
+    std::fs::write(
+        dir.path().join("Alpha.swift"),
+        "final class Alpha {\n    func sync() {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Client.swift"),
+        "func use() {\n    makeThing().sync()\n}\n",
+    )
+    .unwrap();
+    let gamma = dir.path().join("Gamma.swift");
+    std::fs::write(&gamma, "final class Gamma {}\n").unwrap();
+    index(&db, dir.path());
+
+    let targets = |conn: &rusqlite::Connection| -> Vec<(String, bool)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT n.qualified_name, e.ambiguous FROM edges e JOIN nodes n ON n.id = e.target
+                 WHERE e.kind = 'calls' AND e.file LIKE '%Client.swift' ORDER BY n.qualified_name",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    let conn = storage::open_db(&db).unwrap();
+    assert_eq!(targets(&conn), vec![("Alpha.sync()".to_string(), false)]);
+    drop(conn);
+
+    std::fs::write(&gamma, "final class Gamma {\n    func sync() {}\n}\n").unwrap();
+    index(&db, dir.path());
+    let conn = storage::open_db(&db).unwrap();
+    assert_eq!(
+        targets(&conn),
+        vec![
+            ("Alpha.sync()".to_string(), true),
+            ("Gamma.sync()".to_string(), true)
+        ]
+    );
+
+    // And back: removing it makes the call unique again
+    drop(conn);
+    std::fs::write(&gamma, "final class Gamma {}\n").unwrap();
+    index(&db, dir.path());
+    let conn = storage::open_db(&db).unwrap();
+    assert_eq!(targets(&conn), vec![("Alpha.sync()".to_string(), false)]);
+}

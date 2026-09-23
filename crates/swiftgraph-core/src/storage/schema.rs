@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS member_types (
     PRIMARY KEY (file, owner, member)
 ) WITHOUT ROWID;
 
+-- Tree-sitter call sites (JSON), resolved again on incremental runs when a
+-- declaration with their name is added, changed or removed.
+CREATE TABLE IF NOT EXISTS call_sites (
+    file   TEXT NOT NULL,
+    caller TEXT NOT NULL,
+    name   TEXT NOT NULL,
+    line   INTEGER NOT NULL,
+    site   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_call_sites_name ON call_sites(name);
+CREATE INDEX IF NOT EXISTS idx_call_sites_file ON call_sites(file);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

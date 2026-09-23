@@ -17,3 +17,11 @@ Cargo.lock
 
 # Swift build (for swiftgraph-parser)
 .build/
+
+# Agent/workspace files live in the workspace repo, never here
+CLAUDE.md
+AGENTS.md
+WORKLOG.md
+BACKLOG.md
+*_PLAN.md
+*-spec.md

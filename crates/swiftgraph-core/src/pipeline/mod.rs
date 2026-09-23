@@ -41,6 +41,8 @@ pub struct IndexResult {
     pub strategy: IndexStrategy,
     /// Nodes enriched by swift-syntax (0 when the parser is unavailable).
     pub nodes_enriched: usize,
+    /// Why an Index Store that exists was not used, if any.
+    pub index_store_note: Option<String>,
 }
 
 /// Whether the pipeline enriches tree-sitter declarations with swift-syntax.
@@ -84,6 +86,8 @@ impl IndexStrategy {
 
 /// `meta` key holding the [`IndexStrategy`] of the last indexing run.
 pub const META_INDEX_STRATEGY: &str = "index_strategy";
+/// `meta` key explaining why an Index Store that exists was not used.
+pub const META_INDEX_STORE_NOTE: &str = "index_store_note";
 /// `meta` key identifying the backend data source (`tree-sitter` or
 /// `index-store:<path>`). A change forces a full rebuild so USR-based and
 /// `ts::`-based node IDs never mix in one database.
@@ -99,8 +103,20 @@ pub fn index_directory(
     source_root: &Path,
     force: bool,
 ) -> Result<IndexResult, PipelineError> {
-    let store = crate::project::resolve_index_store(source_root);
-    index_directory_with_store(db_path, source_root, force, store.as_deref())
+    let (store, note) = crate::project::resolve_index_store_with_note(source_root);
+    let result = index_directory_with_store(db_path, source_root, force, store.as_deref())?;
+    // Record why an existing store was not used, for `status`
+    let conn = storage::open_db(db_path)?;
+    match &note {
+        Some(n) => queries::set_meta(&conn, META_INDEX_STORE_NOTE, n)?,
+        None => {
+            conn.execute("DELETE FROM meta WHERE key = ?1", [META_INDEX_STORE_NOTE])?;
+        }
+    }
+    Ok(IndexResult {
+        index_store_note: note,
+        ..result
+    })
 }
 
 /// Index with an explicit Index Store path (`None` = tree-sitter only).
@@ -402,6 +418,7 @@ pub fn index_directory_with_options(
         edges_added,
         strategy,
         nodes_enriched,
+        index_store_note: None,
     })
 }
 

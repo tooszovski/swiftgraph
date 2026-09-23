@@ -52,6 +52,9 @@ pub struct ProjectInfo {
     pub name: String,
     /// Index Store location, if one was found.
     pub index_store_path: Option<PathBuf>,
+    /// Why an Index Store that exists was not used (e.g. DerivedData of
+    /// another checkout of the same project).
+    pub index_store_note: Option<String>,
 }
 
 /// How many directory levels below the root [`detect_project`] searches for
@@ -109,6 +112,19 @@ pub fn detect_project(root: &Path) -> Result<ProjectInfo, ProjectError> {
     }
 
     Err(ProjectError::NotFound(root))
+}
+
+/// Like [`resolve_index_store`], plus the reason an existing store was not
+/// used, if any.
+pub fn resolve_index_store_with_note(root: &Path) -> (Option<PathBuf>, Option<String>) {
+    use crate::config::{Config, IndexStoreSetting};
+    match Config::load(root).index_store_setting(root) {
+        IndexStoreSetting::Auto => match detect_project(root) {
+            Ok(info) => (info.index_store_path, info.index_store_note),
+            Err(_) => (None, None),
+        },
+        _ => (resolve_index_store(root), None),
+    }
 }
 
 /// Resolve the Index Store to use for `root`, honouring `index_store_path`
@@ -209,33 +225,101 @@ fn sorted_subdirs(dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// Find Index Store path in DerivedData for Xcode-based projects.
-pub fn find_xcode_index_store(project_name: &str) -> Option<PathBuf> {
-    let home = dirs_hint();
-    let derived_data = home.join("Library/Developer/Xcode/DerivedData");
+/// Find the Index Store of an Xcode project in DerivedData.
+///
+/// Returns the store and, when stores for this project name exist but none
+/// belongs to `root`, a note explaining why none was used.
+pub fn find_xcode_index_store(
+    project_name: &str,
+    root: &Path,
+) -> (Option<PathBuf>, Option<String>) {
+    let derived_data = dirs_hint().join("Library/Developer/Xcode/DerivedData");
+    find_xcode_index_store_in(&derived_data, project_name, root)
+}
 
-    if !derived_data.is_dir() {
-        return None;
-    }
-
-    // DerivedData dirs are named like "ProjectName-abcdef123456"
-    let entries = std::fs::read_dir(&derived_data).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with(project_name) || name_str.starts_with(&format!("{project_name}-")) {
-            let index_path = entry.path().join("Index.noindex/DataStore");
-            if index_path.is_dir() {
-                return Some(index_path);
+/// [`find_xcode_index_store`] against an explicit DerivedData directory.
+///
+/// Entries are named `<ProjectName>-<hash>`; the one whose `info.plist`
+/// `WorkspacePath` lies inside `root` is used (the most recently updated
+/// store if several do). A same-named entry built from another checkout
+/// is rejected: its units describe other files.
+pub fn find_xcode_index_store_in(
+    derived_data: &Path,
+    project_name: &str,
+    root: &Path,
+) -> (Option<PathBuf>, Option<String>) {
+    let Ok(entries) = std::fs::read_dir(derived_data) else {
+        return (None, None);
+    };
+    let root_prefix = format!("{}/", root.display());
+    let mut own: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut foreign: Vec<String> = Vec::new();
+    let mut names: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    names.sort();
+    for entry in names {
+        let dir_name = entry
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if dir_name.rsplit_once('-').map(|(prefix, _)| prefix) != Some(project_name) {
+            continue;
+        }
+        let Some(store) = ["Index.noindex/DataStore", "Index/DataStore"]
+            .iter()
+            .map(|p| entry.join(p))
+            .find(|p| p.is_dir())
+        else {
+            continue;
+        };
+        match workspace_path(&entry.join("info.plist")) {
+            Some(ws) if ws.starts_with(&root_prefix) => {
+                let modified = std::fs::metadata(&store)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                own.push((modified, store));
             }
-            // Also check older path format
-            let index_path_v2 = entry.path().join("Index/DataStore");
-            if index_path_v2.is_dir() {
-                return Some(index_path_v2);
+            Some(ws) => foreign.push(format!("{dir_name} ({ws})")),
+            None => foreign.push(format!("{dir_name} (no WorkspacePath)")),
+        }
+    }
+    if let Some((_, store)) = own.into_iter().max_by(|a, b| a.0.cmp(&b.0)) {
+        return (Some(store), None);
+    }
+    if foreign.is_empty() {
+        return (None, None);
+    }
+    (
+        None,
+        Some(format!(
+            "DerivedData for `{project_name}` belongs to another checkout: {}; not {}",
+            foreign.join(", "),
+            root.display()
+        )),
+    )
+}
+
+/// `WorkspacePath` from a DerivedData `info.plist` (XML or binary): the
+/// first absolute path ending in `.xcodeproj`, `.xcworkspace` or
+/// `Package.swift`.
+fn workspace_path(plist: &Path) -> Option<String> {
+    let bytes = std::fs::read(plist).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    for suffix in [".xcworkspace", ".xcodeproj", "Package.swift"] {
+        for (end, _) in text.match_indices(suffix) {
+            let head = &text[..end];
+            // Walk back over printable characters to the path start
+            let start = head
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| !c.is_control() && !matches!(c, '<' | '>' | '"' | '\u{fffd}'))
+                .last()
+                .map(|(i, _)| i)?;
+            let path = &text[start..end + suffix.len()];
+            if let Some(slash) = path.find('/') {
+                return Some(path[slash..].to_string());
             }
         }
     }
-
     None
 }
 
@@ -250,12 +334,17 @@ fn make_info(root: &Path, project_type: ProjectType) -> ProjectInfo {
         .or_else(|| find_with_extension(root, "xcodeproj"))
         .unwrap_or(dir_name);
 
+    let mut index_store_note = None;
     let index_store_path = match project_type {
         ProjectType::Spm => find_spm_index_store(root),
         ProjectType::Xcode
         | ProjectType::XcodeWorkspace
         | ProjectType::XcodeGen
-        | ProjectType::Tuist => find_xcode_index_store(&name),
+        | ProjectType::Tuist => {
+            let (store, note) = find_xcode_index_store(&name, root);
+            index_store_note = note;
+            store
+        }
     };
 
     ProjectInfo {
@@ -263,6 +352,7 @@ fn make_info(root: &Path, project_type: ProjectType) -> ProjectInfo {
         project_type,
         name,
         index_store_path,
+        index_store_note,
     }
 }
 
@@ -288,6 +378,65 @@ fn dirs_hint() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A fake DerivedData entry `<name>-<hash>` with a store and an
+    /// `info.plist` naming `workspace`.
+    fn derived_data_entry(dd: &Path, dir: &str, workspace: &str, binary: bool) -> PathBuf {
+        let entry = dd.join(dir);
+        let store = entry.join("Index.noindex/DataStore");
+        std::fs::create_dir_all(&store).unwrap();
+        let plist = if binary {
+            // bplist00 stores ASCII strings raw after a length marker
+            let mut b =
+                b"bplist00\xd2\x01\x02_\x10\x10LastAccessedDate_\x10\x0dWorkspacePath_\x10\x2c"
+                    .to_vec();
+            b.extend_from_slice(workspace.as_bytes());
+            b.extend_from_slice(b"\x00\x08\x0b");
+            b
+        } else {
+            format!("<?xml version=\"1.0\"?><plist><dict><key>WorkspacePath</key><string>{workspace}</string></dict></plist>").into_bytes()
+        };
+        std::fs::write(entry.join("info.plist"), plist).unwrap();
+        store
+    }
+
+    #[test]
+    fn derived_data_must_belong_to_the_project() {
+        let dd = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let other = derived_data_entry(
+            dd.path(),
+            "Noor-aaaa",
+            "/tmp/elsewhere/ios-contracts/Noor.xcodeproj",
+            true,
+        );
+        // Only a foreign store: none, with a reason
+        let (store, note) = find_xcode_index_store_in(dd.path(), "Noor", &root);
+        assert_eq!(store, None);
+        let note = note.unwrap();
+        assert!(
+            note.contains("/tmp/elsewhere/ios-contracts/Noor.xcodeproj"),
+            "{note}"
+        );
+        assert!(note.contains(&root.display().to_string()), "{note}");
+
+        // The project's own store wins over the foreign one
+        let own = derived_data_entry(
+            dd.path(),
+            "Noor-bbbb",
+            &format!("{}/Noor.xcodeproj", root.display()),
+            false,
+        );
+        let (store, note) = find_xcode_index_store_in(dd.path(), "Noor", &root);
+        assert_eq!(store, Some(own));
+        assert_eq!(note, None);
+        assert_ne!(Some(other), store);
+
+        // A project name that is a prefix of another one does not match
+        let (store, _) = find_xcode_index_store_in(dd.path(), "No", &root);
+        assert_eq!(store, None);
+    }
 
     #[test]
     fn project_type_as_str() {

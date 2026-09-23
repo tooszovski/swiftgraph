@@ -471,10 +471,14 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
     eprintln!("Indexing {}...", root.display());
 
     // CLI flag wins, then config.json `index_store_path`, then auto-detection
-    let store_path = index_store_path
-        .map(|p| p.to_path_buf())
-        .or_else(|| swiftgraph_core::project::resolve_index_store(root));
+    let (store_path, note) = match index_store_path {
+        Some(p) => (Some(p.to_path_buf()), None),
+        None => swiftgraph_core::project::resolve_index_store_with_note(root),
+    };
 
+    if let Some(note) = &note {
+        eprintln!("⚠ Index Store not used: {note}");
+    }
     if store_path.is_none() {
         eprintln!("⚠ No Index Store found — using tree-sitter fallback (less accurate).");
         eprintln!("  To enable Index Store:");
@@ -490,6 +494,22 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
         force,
         store_path.as_deref(),
     )?;
+    {
+        let conn = swiftgraph_core::storage::open_db(&db_path)?;
+        match &note {
+            Some(n) => swiftgraph_core::storage::queries::set_meta(
+                &conn,
+                swiftgraph_core::pipeline::META_INDEX_STORE_NOTE,
+                n,
+            )?,
+            None => {
+                conn.execute(
+                    "DELETE FROM meta WHERE key = ?1",
+                    [swiftgraph_core::pipeline::META_INDEX_STORE_NOTE],
+                )?;
+            }
+        }
+    }
 
     eprintln!(
         "Done ({:?}): {} files scanned, {} indexed, {} nodes, {} edges",

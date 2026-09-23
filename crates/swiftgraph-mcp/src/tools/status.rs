@@ -21,6 +21,10 @@ pub struct StatusResponse {
     /// `None` if the project has not been indexed yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_strategy: Option<String>,
+    /// Why an existing Index Store was not used (e.g. DerivedData of another
+    /// checkout), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_store_note: Option<String>,
     /// swift-syntax parser used for enrichment (`None` if missing or
     /// incompatible, in which case indexing runs without enrichment).
     pub swift_syntax_parser: Option<String>,
@@ -40,21 +44,23 @@ pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
         ),
         Err(e) => return Err(e.into()),
     };
-    let index_store_path = project::resolve_index_store(project_root);
+    let (index_store_path, lookup_note) = project::resolve_index_store_with_note(project_root);
 
     let db_path = swiftgraph_core::project::db_path(project_root);
-    let (files, nodes, edges, index_strategy) = if db_path.exists() {
+    let (files, nodes, edges, index_strategy, stored_note) = if db_path.exists() {
         let conn = storage::open_db(&db_path)?;
         let stats = queries::get_stats(&conn)?;
         let strategy = queries::get_meta(&conn, pipeline::META_INDEX_STRATEGY)?;
+        let note = queries::get_meta(&conn, pipeline::META_INDEX_STORE_NOTE)?;
         (
             stats.file_count,
             stats.node_count,
             stats.edge_count,
             strategy,
+            note,
         )
     } else {
-        (0, 0, 0, None)
+        (0, 0, 0, None, None)
     };
 
     // "full" means the graph actually contains Index Store data; before the
@@ -75,6 +81,7 @@ pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
         index_store_available: index_store_path.is_some(),
         db_path: db_path.to_string_lossy().to_string(),
         index_strategy,
+        index_store_note: lookup_note.or(stored_note),
         swift_syntax_parser: swiftgraph_core::swift_syntax::SwiftSyntaxParser::discover()
             .map(|p| p.describe()),
     })

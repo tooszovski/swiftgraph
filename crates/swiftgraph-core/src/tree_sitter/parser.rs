@@ -269,14 +269,13 @@ pub struct ParseResult {
 fn map_node_kind(node: &Node, source: &str) -> Option<SymbolKind> {
     match node.kind() {
         "class_declaration" => {
-            let keyword = node
-                .child(0)
-                .and_then(|c| c.utf8_text(source.as_bytes()).ok());
-            match keyword {
+            // The keyword follows `modifiers` (attributes, access level), so
+            // it is not necessarily the first child.
+            match declaration_keyword(node, source) {
                 Some("struct") => Some(SymbolKind::Struct),
-                Some("actor") => Some(SymbolKind::Class),
+                Some("enum") => Some(SymbolKind::Enum),
                 Some("extension") => Some(SymbolKind::Extension),
-                _ => Some(SymbolKind::Class),
+                _ => Some(SymbolKind::Class), // class, actor
             }
         }
         "protocol_declaration" => Some(SymbolKind::Protocol),
@@ -330,8 +329,34 @@ fn extract_signature(node: &Node, source: &str) -> Option<String> {
     }
 }
 
+/// The declaration keyword of a `class_declaration`-like node
+/// (`class`, `struct`, `enum`, `actor`, `extension`).
+fn declaration_keyword<'a>(node: &Node, source: &'a str) -> Option<&'a str> {
+    (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .filter(|c| !c.is_named())
+        .filter_map(|c| c.utf8_text(source.as_bytes()).ok())
+        .find(|t| matches!(*t, "class" | "struct" | "enum" | "actor" | "extension"))
+}
+
+/// Children of the declaration's `modifiers` node (attributes, visibility,
+/// member modifiers), plus legacy direct `attribute`/`modifier` children.
+fn modifier_nodes<'t>(node: &Node<'t>) -> Vec<Node<'t>> {
+    let mut out = Vec::new();
+    for i in 0..node.child_count() {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "modifiers" => out.extend((0..child.child_count()).filter_map(|j| child.child(j))),
+            "attribute" | "modifier" | "visibility_modifier" => out.push(child),
+            _ => {}
+        }
+    }
+    out
+}
+
 fn extract_attributes(node: &Node, source: &str) -> Vec<String> {
     let mut attrs = Vec::new();
+    // Attributes parsed as preceding siblings (older grammar shapes)
     if let Some(parent) = node.parent() {
         for i in 0..parent.child_count() {
             if let Some(sibling) = parent.child(i) {
@@ -346,33 +371,38 @@ fn extract_attributes(node: &Node, source: &str) -> Vec<String> {
             }
         }
     }
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "attribute" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    attrs.push(text.to_string());
-                }
+    for m in modifier_nodes(node) {
+        if m.kind() == "attribute" {
+            if let Ok(text) = m.utf8_text(source.as_bytes()) {
+                attrs.push(text.to_string());
             }
         }
     }
+    attrs.dedup();
     attrs
 }
 
 fn extract_access_level(node: &Node, source: &str) -> AccessLevel {
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "modifiers" || child.kind() == "modifier" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    match text.trim() {
-                        "public" => return AccessLevel::Public,
-                        "private" => return AccessLevel::Private,
-                        "fileprivate" => return AccessLevel::FilePrivate,
-                        "open" => return AccessLevel::Open,
-                        "internal" => return AccessLevel::Internal,
-                        _ => {}
-                    }
-                }
-            }
+    for m in modifier_nodes(node) {
+        if !matches!(m.kind(), "visibility_modifier" | "modifier") {
+            continue;
+        }
+        let Ok(text) = m.utf8_text(source.as_bytes()) else {
+            continue;
+        };
+        // `private(set)` restricts only the setter; the declaration's access
+        // level comes from the plain modifier.
+        if text.contains("(set)") {
+            continue;
+        }
+        match text.trim() {
+            "open" => return AccessLevel::Open,
+            "public" => return AccessLevel::Public,
+            "package" => return AccessLevel::Package,
+            "internal" => return AccessLevel::Internal,
+            "fileprivate" => return AccessLevel::FilePrivate,
+            "private" => return AccessLevel::Private,
+            _ => {}
         }
     }
     AccessLevel::Internal
@@ -465,6 +495,79 @@ fn make_synthetic_id(file: &str, name: &str, line: usize) -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn parse(source: &str) -> ParseResult {
+        TreeSitterParser::new()
+            .unwrap()
+            .parse_source(source, &PathBuf::from("test.swift"))
+            .unwrap()
+    }
+
+    fn find<'a>(result: &'a ParseResult, name: &str) -> &'a GraphNode {
+        result
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("{name} not found"))
+    }
+
+    #[test]
+    fn modifiers_and_attributes_on_type_declarations() {
+        let r = parse(
+            "@MainActor public struct Foo: View {}\n\
+             @MainActor final class VM {}\n\
+             public final class Store {}\n\
+             fileprivate enum Hidden {}\n\
+             package struct Pkg {}\n\
+             @available(iOS 17, *) @MainActor open class Base {}\n",
+        );
+        let foo = find(&r, "Foo");
+        assert_eq!(foo.kind, SymbolKind::Struct);
+        assert_eq!(foo.access_level, AccessLevel::Public);
+        assert!(
+            foo.attributes.iter().any(|a| a == "@MainActor"),
+            "{:?}",
+            foo.attributes
+        );
+
+        let vm = find(&r, "VM");
+        assert_eq!(vm.kind, SymbolKind::Class);
+        assert!(
+            vm.attributes.iter().any(|a| a == "@MainActor"),
+            "{:?}",
+            vm.attributes
+        );
+
+        assert_eq!(find(&r, "Store").access_level, AccessLevel::Public);
+        assert_eq!(find(&r, "Hidden").access_level, AccessLevel::FilePrivate);
+        assert_eq!(find(&r, "Pkg").access_level, AccessLevel::Package);
+        assert_eq!(find(&r, "Pkg").kind, SymbolKind::Struct);
+        let base = find(&r, "Base");
+        assert_eq!(base.access_level, AccessLevel::Open);
+        assert_eq!(base.attributes.len(), 2, "{:?}", base.attributes);
+    }
+
+    #[test]
+    fn modifiers_on_members() {
+        let r = parse(
+            "struct S {\n\
+                 public static func make() -> S { S() }\n\
+                 public private(set) var count = 0\n\
+                 private static let shared = 1\n\
+                 @MainActor public func render() {}\n\
+                 nonisolated public func id() -> Int { 0 }\n\
+             }\n",
+        );
+        assert_eq!(find(&r, "make").access_level, AccessLevel::Public);
+        let render = find(&r, "render");
+        assert_eq!(render.access_level, AccessLevel::Public);
+        assert!(
+            render.attributes.iter().any(|a| a == "@MainActor"),
+            "{:?}",
+            render.attributes
+        );
+        assert_eq!(find(&r, "id").access_level, AccessLevel::Public);
+    }
 
     #[test]
     fn long_non_ascii_signature_does_not_panic() {

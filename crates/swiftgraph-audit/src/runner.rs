@@ -306,4 +306,48 @@ let url = URL(string: "http://localhost:8080/api")!
             assert_eq!(keys, sorted, "max_issues={max_issues}");
         }
     }
+
+    fn run_rule(rule: &dyn AuditRule, source: &str) -> Vec<AuditIssue> {
+        let mut parser = rules::swift_parser().unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let ctx = FileContext {
+            file_path: "test.swift",
+            source,
+            tree: &tree,
+        };
+        rule.check(&ctx)
+    }
+
+    #[test]
+    fn missing_main_actor_sees_through_modifiers() {
+        let rule = rules::concurrency::MissingMainActor;
+        // Modifiers before `class` used to hide the keyword entirely.
+        assert_eq!(
+            run_rule(&rule, "final class VM: ObservableObject {}\n").len(),
+            1
+        );
+        assert_eq!(
+            run_rule(&rule, "public final class VC: UIViewController {}\n").len(),
+            1
+        );
+        // ...and the attribute lives inside `modifiers`.
+        assert!(run_rule(&rule, "@MainActor final class VM: ObservableObject {}\n").is_empty());
+        assert!(run_rule(&rule, "@MainActor class VM: ObservableObject {}\n").is_empty());
+        assert!(run_rule(&rule, "@MainActor public struct S: View {}\n").is_empty());
+    }
+
+    #[test]
+    fn helpers_read_keyword_and_attributes_inside_modifiers() {
+        let source = "@MainActor public struct Foo: View {}\n@objc final class Bar {}\n";
+        let mut parser = rules::swift_parser().unwrap();
+        let tree = parser.parse(source, None).unwrap();
+        let decls = rules::find_descendants(tree.root_node(), source, &|n, _| {
+            n.kind() == "class_declaration"
+        });
+        assert_eq!(rules::class_keyword(decls[0], source), "struct");
+        assert!(rules::has_attribute(decls[0], source, "MainActor"));
+        assert_eq!(rules::class_keyword(decls[1], source), "class");
+        assert!(rules::has_attribute(decls[1], source, "objc"));
+        assert!(!rules::has_attribute(decls[1], source, "MainActor"));
+    }
 }

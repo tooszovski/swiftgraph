@@ -79,25 +79,44 @@ pub fn node_text<'a>(node: Node<'a>, source: &'a str) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 
-/// Helper: check if a node has a specific attribute.
+/// Helper: check if a declaration has an attribute containing `attr`.
+///
+/// Looks at direct `attribute` children and inside the `modifiers` node,
+/// where tree-sitter-swift puts attributes such as `@MainActor`.
 pub fn has_attribute(node: Node, source: &str, attr: &str) -> bool {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "attribute" {
-                let text = node_text(child, source);
-                if text.contains(attr) {
+        let Some(child) = node.child(i) else { continue };
+        match child.kind() {
+            "attribute" => {
+                if node_text(child, source).contains(attr) {
                     return true;
                 }
             }
+            "modifiers" => {
+                for j in 0..child.child_count() {
+                    if let Some(m) = child.child(j) {
+                        if m.kind() == "attribute" && node_text(m, source).contains(attr) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     false
 }
 
-/// Helper: get the keyword of a class_declaration (class/struct/actor).
+/// Helper: get the keyword of a class_declaration (class/struct/enum/actor/extension).
+///
+/// The keyword follows the optional `modifiers` node, so it is not
+/// necessarily the first child.
 pub fn class_keyword<'a>(node: Node<'a>, source: &'a str) -> &'a str {
-    node.child(0)
-        .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+    (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .filter(|c| !c.is_named())
+        .filter_map(|c| c.utf8_text(source.as_bytes()).ok())
+        .find(|t| matches!(*t, "class" | "struct" | "enum" | "actor" | "extension"))
         .unwrap_or("class")
 }
 

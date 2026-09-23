@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS files (
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
-    id              TEXT PRIMARY KEY,
+    -- Explicit rowid alias: FTS5 external content keys on it and VACUUM must not renumber it
+    rid             INTEGER PRIMARY KEY,
+    id              TEXT NOT NULL UNIQUE,
     name            TEXT NOT NULL,
     qualified_name  TEXT NOT NULL,
     kind            TEXT NOT NULL,
@@ -35,7 +37,7 @@ CREATE TABLE IF NOT EXISTS edges (
     target      TEXT NOT NULL,
     kind        TEXT NOT NULL,
     file        TEXT,
-    line        INTEGER,
+    line        INTEGER NOT NULL DEFAULT 0,  -- 0 = no location (e.g. tree-sitter containment)
     col         INTEGER,
     is_implicit INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (source, target, kind, line)
@@ -78,7 +80,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5(
     qualified_name,
     signature,
     content=nodes,
-    content_rowid=rowid
+    content_rowid=rid
 );
 
 -- Triggers to keep FTS in sync
@@ -105,7 +107,7 @@ pub const CREATE_FTS_TRIGRAM: &str = r#"
 CREATE VIRTUAL TABLE IF NOT EXISTS node_trigram USING fts5(
     name,
     content=nodes,
-    content_rowid=rowid,
+    content_rowid=rid,
     tokenize='trigram'
 );
 

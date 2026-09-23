@@ -14,6 +14,15 @@ pub enum StorageError {
     Io(#[from] std::io::Error),
 }
 
+/// Current database schema version, stored in `PRAGMA user_version`.
+///
+/// The database is a cache derived from sources, so on a version mismatch it
+/// is dropped and recreated; the next index run repopulates it.
+///
+/// History: 1 = v0.5.x (implicit rowid, nullable edge line); 2 = explicit
+/// `rid` rowid alias, `edges.line NOT NULL DEFAULT 0`, `meta` table.
+pub const SCHEMA_VERSION: i32 = 2;
+
 /// Open or create the SwiftGraph SQLite database.
 pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
     if let Some(parent) = path.parent() {
@@ -27,27 +36,62 @@ pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;
+         PRAGMA recursive_triggers = ON;
          PRAGMA cache_size = -64000;",
     )?;
 
-    // Create schema
-    conn.execute_batch(schema::CREATE_TABLES)?;
-    conn.execute_batch(schema::CREATE_FTS)?;
-    // Trigram table is best-effort (requires SQLite 3.34+)
-    let _ = conn.execute_batch(schema::CREATE_FTS_TRIGRAM);
-
+    init_schema(&conn)?;
     Ok(conn)
 }
 
 /// Open an in-memory database (for tests).
 pub fn open_memory_db() -> Result<Connection, StorageError> {
     let conn = Connection::open_in_memory()?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA recursive_triggers = ON;")?;
+    init_schema(&conn)?;
+    Ok(conn)
+}
+
+/// Create the schema, dropping an existing database built with another version.
+fn init_schema(conn: &Connection) -> Result<(), StorageError> {
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    let has_tables: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nodes')",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_tables && version != SCHEMA_VERSION {
+        tracing::warn!(
+            "index database schema v{version} != v{SCHEMA_VERSION}, rebuilding (reindex required)"
+        );
+        drop_all(conn)?;
+    }
+
     conn.execute_batch(schema::CREATE_TABLES)?;
     conn.execute_batch(schema::CREATE_FTS)?;
     // Trigram table is best-effort (requires SQLite 3.34+)
     let _ = conn.execute_batch(schema::CREATE_FTS_TRIGRAM);
-    Ok(conn)
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))?;
+    Ok(())
+}
+
+fn drop_all(conn: &Connection) -> Result<(), StorageError> {
+    let objects: Vec<(String, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT type, name FROM sqlite_master
+             WHERE type IN ('table', 'trigger', 'view') AND name NOT LIKE 'sqlite_%'",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    for (kind, name) in objects {
+        // FTS shadow tables disappear with their virtual table.
+        let sql = format!("DROP {} IF EXISTS \"{}\";", kind.to_uppercase(), name);
+        let _ = conn.execute_batch(&sql);
+    }
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    Ok(())
 }
 
 #[cfg(test)]

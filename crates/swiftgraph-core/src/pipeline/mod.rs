@@ -126,14 +126,9 @@ pub fn index_directory_with_store(
             _ => false,
         };
 
-    // On force reindex, rebuild FTS content sync to avoid corruption
+    // On force reindex, start from an empty graph (FTS is kept in sync by triggers)
     if force {
-        let _ = conn.execute_batch(
-            "DELETE FROM nodes; DELETE FROM edges; DELETE FROM files;
-             INSERT INTO node_fts(node_fts) VALUES('rebuild');",
-        );
-        // Rebuild trigram table if it exists
-        let _ = conn.execute_batch("INSERT INTO node_trigram(node_trigram) VALUES('rebuild');");
+        conn.execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;")?;
     }
 
     // Load config for include/exclude globs
@@ -156,6 +151,10 @@ pub fn index_directory_with_store(
         .collect();
 
     let files_scanned = swift_files.len();
+    let scanned_paths: std::collections::HashSet<String> = swift_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
 
     // 2. Try Index Store first
     let mut index_store_files: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -239,8 +238,7 @@ pub fn index_directory_with_store(
         let path_str = path.to_string_lossy();
 
         // Delete old data for this file
-        conn.execute("DELETE FROM edges WHERE file = ?1", [path_str.as_ref()])?;
-        conn.execute("DELETE FROM nodes WHERE file = ?1", [path_str.as_ref()])?;
+        queries::delete_file_data(&conn, &path_str)?;
 
         // Insert file record
         queries::upsert_file(&conn, &path_str, hash, parse_result.nodes.len() as u32)?;
@@ -254,6 +252,12 @@ pub fn index_directory_with_store(
             queries::insert_edge(&conn, edge)?;
             edges_added += 1;
         }
+    }
+
+    // Purge files that no longer exist (or are no longer included)
+    let purged = purge_missing_files(&conn, &scanned_paths, &index_store_files)?;
+    if purged > 0 {
+        info!("Purged {purged} deleted files from the index");
     }
 
     conn.execute("COMMIT", [])?;
@@ -333,6 +337,35 @@ fn write_index_store(
     Ok((nodes_added, edges_added, files))
 }
 
+/// Delete index data for files recorded in the DB that were neither scanned
+/// from disk nor provided by the Index Store in this run.
+fn purge_missing_files(
+    conn: &rusqlite::Connection,
+    scanned: &std::collections::HashSet<String>,
+    from_index_store: &std::collections::HashSet<String>,
+) -> Result<usize, PipelineError> {
+    let known: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT path FROM files")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    let mut purged = 0;
+    for path in known {
+        if scanned.contains(&path) || from_index_store.contains(&path) {
+            continue;
+        }
+        // The file is gone, so edges from other files into it are dangling too.
+        conn.execute(
+            "DELETE FROM edges WHERE target IN (SELECT id FROM nodes WHERE file = ?1)",
+            [&path],
+        )?;
+        queries::delete_file_data(conn, &path)?;
+        conn.execute("DELETE FROM files WHERE path = ?1", [&path])?;
+        purged += 1;
+    }
+    Ok(purged)
+}
+
 /// Resolve `name::` prefixed edge targets to real node IDs.
 ///
 /// After tree-sitter parsing, call edges use `name::functionName` as target.
@@ -406,7 +439,7 @@ fn resolve_name_edges(conn: &rusqlite::Connection) -> Result<usize, PipelineErro
                     target_id,
                     edge.kind,
                     edge.file,
-                    edge.line,
+                    edge.line.unwrap_or(0),
                     edge.col,
                     edge.is_implicit
                 ])?;

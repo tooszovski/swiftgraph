@@ -4,14 +4,26 @@ use crate::graph::{
     AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, NodeMetrics, SymbolKind, SymbolSubKind,
 };
 
-/// Insert or replace a node in the database.
+/// Insert a node, or update it in place if a node with the same ID exists.
+///
+/// Uses `ON CONFLICT DO UPDATE` rather than `INSERT OR REPLACE` so the row
+/// keeps its rowid and the FTS update triggers fire.
 pub fn upsert_node(conn: &Connection, node: &GraphNode) -> SqlResult<()> {
     conn.execute(
-        r#"INSERT OR REPLACE INTO nodes
+        r#"INSERT INTO nodes
            (id, name, qualified_name, kind, sub_kind, file, line, col, end_line, end_col,
             signature, attributes, access_level, container_usr, doc_comment,
             lines, complexity, parameter_count)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"#,
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name, qualified_name = excluded.qualified_name,
+             kind = excluded.kind, sub_kind = excluded.sub_kind, file = excluded.file,
+             line = excluded.line, col = excluded.col, end_line = excluded.end_line,
+             end_col = excluded.end_col, signature = excluded.signature,
+             attributes = excluded.attributes, access_level = excluded.access_level,
+             container_usr = excluded.container_usr, doc_comment = excluded.doc_comment,
+             lines = excluded.lines, complexity = excluded.complexity,
+             parameter_count = excluded.parameter_count"#,
         params![
             node.id,
             node.name,
@@ -46,11 +58,27 @@ pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
             edge.target,
             edge.kind.as_str(),
             edge.location.as_ref().map(|l| &l.file),
-            edge.location.as_ref().map(|l| l.line),
+            edge.location.as_ref().map_or(0, |l| l.line),
             edge.location.as_ref().map(|l| l.column),
             edge.is_implicit as i32,
         ],
     )?;
+    Ok(())
+}
+
+/// Remove a file and everything derived from it: its nodes, edges recorded
+/// in it, and location-less edges (e.g. containment) touching its nodes.
+///
+/// Edges from *other* files that target this file's nodes are kept; they are
+/// refreshed when those files are reindexed.
+pub fn delete_file_data(conn: &Connection, path: &str) -> SqlResult<()> {
+    conn.execute(
+        r#"DELETE FROM edges WHERE file = ?1
+           OR (file IS NULL AND (source IN (SELECT id FROM nodes WHERE file = ?1)
+                              OR target IN (SELECT id FROM nodes WHERE file = ?1)))"#,
+        [path],
+    )?;
+    conn.execute("DELETE FROM nodes WHERE file = ?1", [path])?;
     Ok(())
 }
 
@@ -76,8 +104,10 @@ pub fn set_meta(conn: &Connection, key: &str, value: &str) -> SqlResult<()> {
 /// Upsert a file record.
 pub fn upsert_file(conn: &Connection, path: &str, hash: &str, symbol_count: u32) -> SqlResult<()> {
     conn.execute(
-        r#"INSERT OR REPLACE INTO files (path, hash, last_indexed, symbol_count)
-           VALUES (?1, ?2, datetime('now'), ?3)"#,
+        r#"INSERT INTO files (path, hash, last_indexed, symbol_count)
+           VALUES (?1, ?2, datetime('now'), ?3)
+           ON CONFLICT(path) DO UPDATE SET hash = excluded.hash,
+             last_indexed = excluded.last_indexed, symbol_count = excluded.symbol_count"#,
         params![path, hash, symbol_count],
     )?;
     Ok(())

@@ -342,7 +342,10 @@ impl<'s> CallCollector<'s> {
             }
             "simple_identifier" | "type_identifier" => {
                 if !self.callee_ids.contains(&node.id()) && !is_declared_name(&node) {
-                    self.references.insert(self.text(node).to_string());
+                    // `$name` reads the projected value of property `name`.
+                    let name = self.text(node);
+                    self.references
+                        .insert(name.strip_prefix('$').unwrap_or(name).to_string());
                 }
             }
             _ => self.walk_children(node),

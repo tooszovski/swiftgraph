@@ -203,7 +203,14 @@ fn dead_code_keeps_symbols_referenced_by_name_and_reports_unreferenced_ones() {
         .map(|s| s.name.as_str())
         .collect();
     // Read as a member (`Units.secondInMillis`) or used as a type annotation.
-    for alive in ["Units", "secondInMillis", "ApiRequest"] {
+    // `$previewFlag` reads the projected value of a top-level `@State`.
+    for alive in [
+        "Units",
+        "secondInMillis",
+        "ApiRequest",
+        "previewFlag",
+        "macroFlag",
+    ] {
         assert!(!dead.contains(&alive), "{alive} reported dead: {dead:?}");
     }
     for unreferenced in ["Orphan", "orphanHelper"] {

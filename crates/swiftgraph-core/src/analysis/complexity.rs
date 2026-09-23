@@ -10,7 +10,7 @@ use std::path::Path;
 use serde::Serialize;
 use thiserror::Error;
 
-use crate::storage::{self, queries};
+use crate::storage;
 
 #[derive(Debug, Error)]
 pub enum ComplexityError {
@@ -36,9 +36,14 @@ pub struct SymbolComplexity {
 /// Complexity analysis result.
 #[derive(Debug, Serialize)]
 pub struct ComplexityResult {
+    /// Top symbols, at most `limit`.
     pub symbols: Vec<SymbolComplexity>,
+    /// Per-file statistics over the returned symbols.
     pub file_stats: Vec<FileComplexity>,
+    /// Number of symbols analyzed.
     pub total_symbols: usize,
+    /// `symbols` was cut to `limit`.
+    pub truncated: bool,
 }
 
 /// Per-file complexity.
@@ -63,37 +68,41 @@ pub fn analyze_complexity(
 }
 
 /// Analyze complexity from an existing connection.
+///
+/// Fan-in/fan-out count every edge kind except ambiguous call edges; all
+/// symbols matching `path_filter` are analyzed with one grouped query.
 pub fn analyze_complexity_from_conn(
     conn: &rusqlite::Connection,
     path_filter: Option<&str>,
     limit: u32,
     sort_by: &str,
 ) -> Result<ComplexityResult, ComplexityError> {
-    // Get all nodes (filtered by path if specified)
-    let nodes = if let Some(prefix) = path_filter {
-        queries::get_nodes_by_path_prefix(conn, prefix, 5000)?
-    } else {
-        queries::get_all_nodes(conn, 5000)?
-    };
-
-    let mut symbols: Vec<SymbolComplexity> = Vec::new();
-    let mut file_map: HashMap<String, Vec<&SymbolComplexity>> = HashMap::new();
-
-    for node in &nodes {
-        let fan_in = queries::count_incoming(conn, &node.id).unwrap_or(0);
-        let fan_out = queries::count_outgoing(conn, &node.id).unwrap_or(0);
-        let score = fan_in as f64 * 1.5 + fan_out as f64;
-
-        symbols.push(SymbolComplexity {
-            id: node.id.clone(),
-            name: node.name.clone(),
-            kind: node.kind.as_str().to_string(),
-            file: node.location.file.clone(),
+    let pattern = format!("{}%", path_filter.unwrap_or(""));
+    let mut stmt = conn.prepare(
+        "SELECT n.id, n.name, n.kind, n.file, COALESCE(i.c, 0), COALESCE(o.c, 0)
+         FROM nodes n
+         LEFT JOIN (SELECT target AS id, COUNT(*) AS c FROM edges
+                    WHERE ambiguous = 0 GROUP BY target) i ON i.id = n.id
+         LEFT JOIN (SELECT source AS id, COUNT(*) AS c FROM edges
+                    WHERE ambiguous = 0 GROUP BY source) o ON o.id = n.id
+         WHERE n.file LIKE ?1",
+    )?;
+    let rows = stmt.query_map([&pattern], |r| {
+        let fan_in: u32 = r.get(4)?;
+        let fan_out: u32 = r.get(5)?;
+        Ok(SymbolComplexity {
+            id: r.get(0)?,
+            name: r.get(1)?,
+            kind: r.get(2)?,
+            file: r.get(3)?,
             fan_in,
             fan_out,
-            score,
-        });
-    }
+            score: fan_in as f64 * 1.5 + fan_out as f64,
+        })
+    })?;
+    let mut symbols: Vec<SymbolComplexity> = rows.collect::<Result<_, _>>()?;
+    let total = symbols.len();
+    let mut file_map: HashMap<String, Vec<&SymbolComplexity>> = HashMap::new();
 
     // Sort
     match sort_by {
@@ -104,8 +113,8 @@ pub fn analyze_complexity_from_conn(
         _ => symbols.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id))),
     }
 
+    let truncated = symbols.len() > limit as usize;
     symbols.truncate(limit as usize);
-    let total = symbols.len();
 
     // Compute file stats
     for s in &symbols {
@@ -138,5 +147,6 @@ pub fn analyze_complexity_from_conn(
         symbols,
         file_stats,
         total_symbols: total,
+        truncated,
     })
 }

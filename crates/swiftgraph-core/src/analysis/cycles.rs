@@ -32,7 +32,13 @@ pub struct DependencyCycle {
 pub struct CycleResult {
     pub cycles: Vec<DependencyCycle>,
     pub files_analyzed: usize,
+    /// More cycles may exist: `max_cycles` was reached or the file-pair scan
+    /// hit its limit.
+    pub truncated: bool,
 }
+
+/// Upper bound on distinct file-to-file dependencies read for cycle search.
+const MAX_FILE_PAIRS: u32 = 2_000_000;
 
 /// Detect file-level dependency cycles.
 pub fn detect_cycles(
@@ -50,8 +56,9 @@ pub fn detect_cycles_from_conn(
     path_filter: Option<&str>,
     max_cycles: u32,
 ) -> Result<CycleResult, CycleError> {
-    // Build file-level dependency graph
-    let edges = queries::get_cross_file_edges(conn, path_filter, 50000)?;
+    // Build file-level dependency graph (ambiguous call edges excluded)
+    let edges = queries::get_cross_file_edges(conn, path_filter, MAX_FILE_PAIRS)?;
+    let pairs_truncated = edges.len() >= MAX_FILE_PAIRS as usize;
 
     // Ordered collections: which cycles are found depends on traversal order.
     let mut file_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
@@ -90,9 +97,11 @@ pub fn detect_cycles_from_conn(
         }
     }
 
+    let truncated = pairs_truncated || cycles.len() >= max_cycles as usize;
     Ok(CycleResult {
         cycles,
         files_analyzed,
+        truncated,
     })
 }
 

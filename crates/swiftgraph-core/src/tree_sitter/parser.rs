@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use thiserror::Error;
-use tree_sitter::{Node, Parser, Tree};
+use tree_sitter::{Node, Parser};
 
 use crate::graph::{AccessLevel, EdgeKind, GraphEdge, GraphNode, Location, SymbolKind};
 
@@ -21,6 +21,7 @@ pub struct TreeSitterParser {
 }
 
 impl TreeSitterParser {
+    /// Create a parser for Swift sources.
     pub fn new() -> Result<Self, ParseError> {
         let mut parser = Parser::new();
         let language = tree_sitter_swift::LANGUAGE;
@@ -30,13 +31,13 @@ impl TreeSitterParser {
         Ok(Self { parser })
     }
 
-    /// Parse a Swift file and extract nodes and edges.
+    /// Parse a Swift file and extract nodes, edges and call sites.
     pub fn parse_file(&mut self, path: &Path) -> Result<ParseResult, ParseError> {
         let source = std::fs::read_to_string(path)?;
         self.parse_source(&source, path)
     }
 
-    /// Parse Swift source code and extract nodes and edges.
+    /// Parse Swift source code and extract nodes, edges and call sites.
     pub fn parse_source(&mut self, source: &str, path: &Path) -> Result<ParseResult, ParseError> {
         let tree = self
             .parser
@@ -46,223 +47,671 @@ impl TreeSitterParser {
         let mut result = ParseResult {
             nodes: Vec::new(),
             edges: Vec::new(),
+            calls: Vec::new(),
+            references: Vec::new(),
         };
 
         let file_path = path.to_string_lossy().to_string();
         let root = tree.root_node();
-        self.visit_node(root, source, &file_path, None, &mut result);
+        visit_node(root, source, &file_path, None, &mut result);
 
-        // Second pass: extract call edges and type references from function bodies
-        self.extract_calls(&tree, source, &file_path, &mut result);
+        // Second pass: call sites with what this file tells about their
+        // receivers, and names referenced outside of calls.
+        (result.calls, result.references) =
+            CallCollector::new(source, &file_path, root).collect(root);
 
         Ok(result)
     }
+}
 
-    fn visit_node(
-        &self,
-        node: Node,
-        source: &str,
-        file_path: &str,
-        container_id: Option<&str>,
-        result: &mut ParseResult,
-    ) {
-        // Extract declarations
-        if let Some(symbol_kind) = map_node_kind(&node, source) {
-            if let Some(name) = extract_name(&node, source) {
-                let id = make_synthetic_id(file_path, &name, node.start_position().row);
+/// The declaration enclosing the node being visited.
+#[derive(Clone, Copy)]
+struct Container<'a> {
+    id: &'a str,
+    /// Qualified name when the container is a type or an extension.
+    type_path: Option<&'a str>,
+}
 
-                let graph_node = GraphNode {
-                    id: id.clone(),
-                    name: name.clone(),
-                    qualified_name: name.clone(),
-                    kind: symbol_kind,
-                    sub_kind: None,
-                    location: Location {
-                        file: file_path.to_string(),
-                        line: node.start_position().row as u32 + 1,
-                        column: node.start_position().column as u32 + 1,
-                        end_line: Some(node.end_position().row as u32 + 1),
-                        end_column: Some(node.end_position().column as u32 + 1),
-                    },
-                    signature: extract_signature(&node, source),
-                    attributes: extract_attributes(&node, source),
-                    access_level: extract_access_level(&node, source),
-                    container_usr: container_id.map(String::from),
-                    doc_comment: None,
-                    metrics: None,
-                };
-
-                // Add containment edge
-                if let Some(parent_id) = container_id {
-                    result.edges.push(GraphEdge {
-                        source: parent_id.to_string(),
-                        target: id.clone(),
-                        kind: EdgeKind::Contains,
-                        location: None,
-                        is_implicit: true,
-                    });
-                }
-
-                result.nodes.push(graph_node);
-
-                // Extract inheritance/conformance from type declarations
-                if matches!(
-                    symbol_kind,
-                    SymbolKind::Class | SymbolKind::Struct | SymbolKind::Enum
-                ) {
-                    extract_inheritance(&node, source, &id, file_path, result);
-                }
-
-                // Extract extension target
-                if symbol_kind == SymbolKind::Extension {
-                    extract_extension_target(&node, source, &id, file_path, result);
-                }
-
-                // Recurse into children with this as container
-                let child_container = id.clone();
-                for i in 0..node.child_count() {
-                    if let Some(child) = node.child(i) {
-                        self.visit_node(child, source, file_path, Some(&child_container), result);
-                    }
-                }
-                return;
+fn visit_node(
+    node: Node,
+    source: &str,
+    file_path: &str,
+    container: Option<Container>,
+    result: &mut ParseResult,
+) {
+    if let Some(symbol_kind) = map_node_kind(&node, source) {
+        if let Some(name) = extract_name(&node, source) {
+            let id = make_synthetic_id(file_path, &name, node.start_position().row);
+            let is_type = matches!(
+                symbol_kind,
+                SymbolKind::Class
+                    | SymbolKind::Struct
+                    | SymbolKind::Enum
+                    | SymbolKind::Protocol
+                    | SymbolKind::Extension
+            );
+            // Extensions are top-level; their qualified name is the extended type.
+            let mut qualified = match container.and_then(|c| c.type_path) {
+                Some(prefix) if symbol_kind != SymbolKind::Extension => format!("{prefix}.{name}"),
+                _ => name.clone(),
+            };
+            if symbol_kind == SymbolKind::Function {
+                qualified.push_str(&parameter_labels(&node, source));
             }
-        }
 
-        // Recurse into children
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.visit_node(child, source, file_path, container_id, result);
+            let graph_node = GraphNode {
+                id: id.clone(),
+                name: name.clone(),
+                qualified_name: qualified.clone(),
+                kind: symbol_kind,
+                sub_kind: None,
+                location: Location {
+                    file: file_path.to_string(),
+                    line: node.start_position().row as u32 + 1,
+                    column: node.start_position().column as u32 + 1,
+                    end_line: Some(node.end_position().row as u32 + 1),
+                    end_column: Some(node.end_position().column as u32 + 1),
+                },
+                signature: extract_signature(&node, source),
+                attributes: extract_attributes(&node, source),
+                access_level: extract_access_level(&node, source),
+                container_usr: container.map(|c| c.id.to_string()),
+                doc_comment: None,
+                metrics: None,
+            };
+
+            // Add containment edge
+            if let Some(parent) = container {
+                result.edges.push(GraphEdge {
+                    source: parent.id.to_string(),
+                    target: id.clone(),
+                    kind: EdgeKind::Contains,
+                    location: None,
+                    is_implicit: true,
+                    ambiguous: false,
+                });
             }
+
+            result.nodes.push(graph_node);
+
+            // Inheritance/conformance of types, protocols and extensions
+            if is_type {
+                extract_inheritance(&node, source, &id, file_path, result);
+            }
+
+            // Extract extension target
+            if symbol_kind == SymbolKind::Extension {
+                extract_extension_target(&node, source, &id, file_path, result);
+            }
+
+            // Recurse into children with this as container
+            let child = Container {
+                id: &id,
+                type_path: is_type.then_some(qualified.as_str()),
+            };
+            for i in 0..node.child_count() {
+                if let Some(c) = node.child(i) {
+                    visit_node(c, source, file_path, Some(child), result);
+                }
+            }
+            return;
         }
     }
 
-    /// Second pass: find all call_expression nodes and create Calls edges.
-    fn extract_calls(&self, tree: &Tree, source: &str, file_path: &str, result: &mut ParseResult) {
-        let root = tree.root_node();
-        // Build a map: line range → containing function node ID
-        let func_ranges: Vec<(u32, u32, String)> = result
-            .nodes
-            .iter()
-            .filter(|n| {
-                matches!(
-                    n.kind,
-                    SymbolKind::Function | SymbolKind::Method | SymbolKind::Property
-                )
-            })
-            .filter_map(|n| Some((n.location.line, n.location.end_line?, n.id.clone())))
-            .collect();
-
-        self.visit_calls(root, source, file_path, &func_ranges, result);
-    }
-
-    fn visit_calls(
-        &self,
-        node: Node,
-        source: &str,
-        file_path: &str,
-        func_ranges: &[(u32, u32, String)],
-        result: &mut ParseResult,
-    ) {
-        if node.kind() == "call_expression" {
-            let callee_name = extract_call_target(&node, source);
-            if let Some(name) = callee_name {
-                // Skip trivial calls (operators, very short names)
-                if name.len() >= 2 && !name.starts_with('_') {
-                    let call_line = node.start_position().row as u32 + 1;
-
-                    // Find the containing function
-                    let caller_id = func_ranges
-                        .iter()
-                        .find(|(start, end, _)| call_line >= *start && call_line <= *end)
-                        .map(|(_, _, id)| id.clone());
-
-                    // Create a Calls edge: caller → callee (by name, resolved later)
-                    let source_id =
-                        caller_id.unwrap_or_else(|| format!("ts::{file_path}::__top_level__::0"));
-                    let target_id = format!("name::{name}");
-
-                    result.edges.push(GraphEdge {
-                        source: source_id,
-                        target: target_id,
-                        kind: EdgeKind::Calls,
-                        location: Some(Location {
-                            file: file_path.to_string(),
-                            line: call_line,
-                            column: node.start_position().column as u32 + 1,
-                            end_line: None,
-                            end_column: None,
-                        }),
-                        is_implicit: false,
-                    });
-                }
-            }
-        }
-
-        // Recurse
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                self.visit_calls(child, source, file_path, func_ranges, result);
-            }
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            visit_node(child, source, file_path, container, result);
         }
     }
 }
 
-/// Extract the callee name from a call_expression node.
-/// Returns the function/method name (last identifier in the chain).
-fn extract_call_target(node: &Node, source: &str) -> Option<String> {
-    // call_expression has:
-    // - simple_identifier (direct call: fetchItems())
-    // - navigation_expression (member call: service.performRequest())
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            match child.kind() {
-                "simple_identifier" => {
-                    return child.utf8_text(source.as_bytes()).ok().map(String::from);
+/// Argument labels of a function declaration in Swift notation: `(id:_:)`.
+fn parameter_labels(node: &Node, source: &str) -> String {
+    let mut out = String::from("(");
+    let mut cursor = node.walk();
+    for param in node
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "parameter")
+    {
+        let label = param
+            .child_by_field_name("external_name")
+            .or_else(|| first_child_of_kind(&param, "simple_identifier"))
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("_");
+        out.push_str(label);
+        out.push(':');
+    }
+    out.push(')');
+    out
+}
+
+/// What a call site's receiver is known to be, as far as one file tells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Receiver {
+    /// `foo()`: a member of an enclosing type, a free function or an initializer.
+    Implicit,
+    /// A receiver of a known type: `self.foo()`, `Type.foo()`, `Type().foo()`,
+    /// `x.foo()` with `x` declared as `let x: Type` or `let x = Type(...)`.
+    Typed(String),
+    /// `super.foo()` inside the named type.
+    Super(String),
+    /// Any other expression; the type is unknown.
+    Unknown,
+}
+
+/// A call found by tree-sitter. Targets are resolved after indexing, when
+/// every file's declarations are in the database.
+#[derive(Debug, Clone)]
+pub struct CallSite {
+    /// ID of the calling declaration (function or property), or the file's
+    /// `__top_level__` pseudo-node.
+    pub caller: String,
+    /// Called name (the last component of a member chain).
+    pub name: String,
+    /// What is known about the receiver.
+    pub receiver: Receiver,
+    /// Enclosing type names, innermost first.
+    pub scope: Vec<String>,
+    /// Labels of the parenthesized arguments (`None` = unlabeled).
+    pub labels: Vec<Option<String>>,
+    /// Number of trailing closures.
+    pub trailing_closures: usize,
+    /// Where the call is.
+    pub location: Location,
+}
+
+/// Local scope: variable name -> declared type name, if known.
+type Frame = std::collections::HashMap<String, Option<String>>;
+
+/// Type of an expression as far as the collector can infer it.
+enum ExprType {
+    Named(String),
+    Super,
+}
+
+/// Walks declarations and function bodies and records call sites.
+struct CallCollector<'s> {
+    source: &'s str,
+    file: &'s str,
+    /// Properties declared in this file, per type name: property -> declared type.
+    members: std::collections::HashMap<String, Frame>,
+    /// Enclosing type names, outermost first.
+    types: Vec<String>,
+    /// Declaration the calls are attributed to.
+    caller: Option<String>,
+    /// Local scopes, innermost last.
+    locals: Vec<Frame>,
+    calls: Vec<CallSite>,
+    /// Identifiers referenced outside of call position.
+    references: std::collections::BTreeSet<String>,
+    /// Callee identifiers already recorded as call sites.
+    callee_ids: std::collections::HashSet<usize>,
+}
+
+impl<'s> CallCollector<'s> {
+    fn new(source: &'s str, file: &'s str, root: Node) -> Self {
+        let mut members = std::collections::HashMap::new();
+        collect_members(root, source, &mut members);
+        Self {
+            source,
+            file,
+            members,
+            types: Vec::new(),
+            caller: None,
+            locals: Vec::new(),
+            calls: Vec::new(),
+            references: std::collections::BTreeSet::new(),
+            callee_ids: std::collections::HashSet::new(),
+        }
+    }
+
+    fn collect(mut self, root: Node) -> (Vec<CallSite>, Vec<String>) {
+        self.walk(root);
+        (self.calls, self.references.into_iter().collect())
+    }
+
+    fn text(&self, node: Node) -> &'s str {
+        node.utf8_text(self.source.as_bytes()).unwrap_or("")
+    }
+
+    fn walk_children(&mut self, node: Node) {
+        let mut cursor = node.walk();
+        let children: Vec<Node> = node.children(&mut cursor).collect();
+        for child in children {
+            self.walk(child);
+        }
+    }
+
+    fn walk(&mut self, node: Node) {
+        match node.kind() {
+            "class_declaration" | "protocol_declaration" => {
+                let name = extract_name(&node, self.source);
+                let caller = self.caller.take();
+                let locals = std::mem::take(&mut self.locals);
+                if let Some(name) = &name {
+                    self.types.push(name.clone());
                 }
-                "navigation_expression" => {
-                    // Get the last identifier in the chain (the method name)
-                    return extract_nav_call_name(&child, source);
+                self.walk_children(node);
+                if name.is_some() {
+                    self.types.pop();
+                }
+                self.caller = caller;
+                self.locals = locals;
+            }
+            "function_declaration"
+            | "init_declaration"
+            | "deinit_declaration"
+            | "subscript_declaration" => {
+                let caller = self.caller.clone();
+                if self.caller.is_none() && node.kind() == "function_declaration" {
+                    self.caller = extract_name(&node, self.source)
+                        .map(|name| make_synthetic_id(self.file, &name, node.start_position().row));
+                }
+                self.locals.push(parameter_frame(&node, self.source));
+                self.walk_children(node);
+                self.locals.pop();
+                self.caller = caller;
+            }
+            "property_declaration" if self.caller.is_none() => {
+                // A property of a type or a global: calls in its initializer
+                // or accessors belong to it.
+                self.caller = extract_name(&node, self.source)
+                    .map(|name| make_synthetic_id(self.file, &name, node.start_position().row));
+                self.walk_children(node);
+                self.caller = None;
+            }
+            "property_declaration" => {
+                let bindings = property_bindings(&node, self.source);
+                if self.locals.is_empty() {
+                    self.locals.push(Frame::new());
+                }
+                if let Some(frame) = self.locals.last_mut() {
+                    frame.extend(bindings);
+                }
+                self.walk_children(node);
+            }
+            "lambda_literal" => {
+                self.locals.push(lambda_frame(&node, self.source));
+                self.walk_children(node);
+                self.locals.pop();
+            }
+            "call_expression" => {
+                self.record(node);
+                self.walk_children(node);
+            }
+            "simple_identifier" | "type_identifier" => {
+                if !self.callee_ids.contains(&node.id()) && !is_declared_name(&node) {
+                    self.references.insert(self.text(node).to_string());
+                }
+            }
+            _ => self.walk_children(node),
+        }
+    }
+
+    /// `Some(type)` if `name` is a local variable or parameter in scope.
+    fn local(&self, name: &str) -> Option<Option<String>> {
+        self.locals
+            .iter()
+            .rev()
+            .find_map(|frame| frame.get(name).cloned())
+    }
+
+    fn expr_type(&self, expr: Node) -> Option<ExprType> {
+        match expr.kind() {
+            "self_expression" => self.types.last().cloned().map(ExprType::Named),
+            "super_expression" => self.types.last().map(|_| ExprType::Super),
+            "simple_identifier" => {
+                let name = self.text(expr);
+                if let Some(local) = self.local(name) {
+                    return local.map(ExprType::Named);
+                }
+                if let Some(ty) = self
+                    .types
+                    .last()
+                    .and_then(|t| self.members.get(t))
+                    .and_then(|m| m.get(name))
+                {
+                    return ty.clone().map(ExprType::Named);
+                }
+                starts_uppercase(name).then(|| ExprType::Named(name.to_string()))
+            }
+            "navigation_expression" => {
+                let ExprType::Named(base) = self.expr_type(expr.child_by_field_name("target")?)?
+                else {
+                    return None;
+                };
+                let property = nav_suffix(&expr).map(|n| self.text(n))?;
+                self.members
+                    .get(&base)?
+                    .get(property)?
+                    .clone()
+                    .map(ExprType::Named)
+            }
+            "postfix_expression" => self.expr_type(expr.child_by_field_name("target")?),
+            "call_expression" => {
+                let ty = constructor_type(&expr, self.source)?;
+                self.local(&ty).is_none().then_some(ExprType::Named(ty))
+            }
+            _ => None,
+        }
+    }
+
+    fn record(&mut self, node: Node) {
+        let Some(callee) = node.named_child(0) else {
+            return;
+        };
+        let (name, receiver) = match callee.kind() {
+            "simple_identifier" => {
+                let name = self.text(callee);
+                // Calling a local closure or a parameter, not a declaration.
+                if self.local(name).is_some() {
+                    return;
+                }
+                self.callee_ids.insert(callee.id());
+                (name, Receiver::Implicit)
+            }
+            "navigation_expression" => {
+                let Some(suffix) = nav_suffix(&callee) else {
+                    return;
+                };
+                self.callee_ids.insert(suffix.id());
+                let name = self.text(suffix);
+                let receiver = match callee
+                    .child_by_field_name("target")
+                    .and_then(|t| self.expr_type(t))
+                {
+                    Some(ExprType::Named(ty)) => Receiver::Typed(ty),
+                    Some(ExprType::Super) => self
+                        .types
+                        .last()
+                        .map_or(Receiver::Unknown, |t| Receiver::Super(t.clone())),
+                    None => Receiver::Unknown,
+                };
+                (name, receiver)
+            }
+            _ => return,
+        };
+        // Skip trivial calls (operators, very short names) and initializers.
+        if name.len() < 2 || name.starts_with('_') || name == "init" {
+            return;
+        }
+
+        let mut labels = Vec::new();
+        let mut trailing_closures = 0;
+        let mut cursor = node.walk();
+        for suffix in node
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "call_suffix")
+        {
+            let mut inner = suffix.walk();
+            for part in suffix.children(&mut inner) {
+                match part.kind() {
+                    "value_arguments" => {
+                        let mut args = part.walk();
+                        for arg in part
+                            .children(&mut args)
+                            .filter(|a| a.kind() == "value_argument")
+                        {
+                            labels.push(
+                                first_child_of_kind(&arg, "value_argument_label")
+                                    .map(|l| self.text(l).to_string()),
+                            );
+                        }
+                    }
+                    "lambda_literal" => trailing_closures += 1,
+                    _ => {}
+                }
+            }
+        }
+
+        let caller = self
+            .caller
+            .clone()
+            .unwrap_or_else(|| format!("ts::{}::__top_level__::0", self.file));
+        self.calls.push(CallSite {
+            caller,
+            name: name.to_string(),
+            receiver,
+            scope: self.types.iter().rev().cloned().collect(),
+            labels,
+            trailing_closures,
+            location: Location {
+                file: self.file.to_string(),
+                line: node.start_position().row as u32 + 1,
+                column: node.start_position().column as u32 + 1,
+                end_line: None,
+                end_column: None,
+            },
+        });
+    }
+}
+
+/// Whether an identifier is the name being declared (not a reference).
+fn is_declared_name(node: &Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    match parent.kind() {
+        "class_declaration"
+        | "protocol_declaration"
+        | "function_declaration"
+        | "protocol_function_declaration"
+        | "typealias_declaration"
+        | "associatedtype_declaration"
+        | "enum_entry"
+        | "parameter"
+        | "lambda_parameter"
+        | "value_argument_label" => true,
+        // `let name` / `var name` in property declarations
+        "pattern" => parent.parent().is_some_and(|g| {
+            matches!(
+                g.kind(),
+                "property_declaration" | "protocol_property_declaration"
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// Record declared property types of every type (and extension) in the file.
+fn collect_members(
+    node: Node,
+    source: &str,
+    members: &mut std::collections::HashMap<String, Frame>,
+) {
+    if matches!(node.kind(), "class_declaration" | "protocol_declaration") {
+        if let (Some(name), Some(body)) = (
+            extract_name(&node, source),
+            node.child_by_field_name("body"),
+        ) {
+            let mut cursor = body.walk();
+            for decl in body.children(&mut cursor).filter(|c| {
+                matches!(
+                    c.kind(),
+                    "property_declaration" | "protocol_property_declaration"
+                )
+            }) {
+                members
+                    .entry(name.clone())
+                    .or_default()
+                    .extend(property_bindings(&decl, source));
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_members(child, source, members);
+    }
+}
+
+/// Names bound by a property declaration with their declared type, from a
+/// type annotation or an initializer call (`let x = Type(...)`).
+fn property_bindings(decl: &Node, source: &str) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = Vec::new();
+    let mut cursor = decl.walk();
+    for child in decl.children(&mut cursor) {
+        match child.kind() {
+            "pattern" => {
+                // Tuple patterns bind several names of unknown types.
+                if let Some(id) = first_child_of_kind(&child, "simple_identifier") {
+                    if let Ok(name) = id.utf8_text(source.as_bytes()) {
+                        out.push((name.to_string(), None));
+                    }
+                }
+            }
+            "type_annotation" => {
+                if let Some(last) = out.last_mut() {
+                    last.1 = child.named_child(0).and_then(|t| type_name(&t, source));
+                }
+            }
+            "call_expression" => {
+                if let Some(last) = out.last_mut() {
+                    if last.1.is_none() {
+                        last.1 = constructor_type(&child, source);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Parameters of a function, initializer or subscript with their types.
+fn parameter_frame(node: &Node, source: &str) -> Frame {
+    let mut frame = Frame::new();
+    let mut cursor = node.walk();
+    for param in node
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "parameter")
+    {
+        let mut name = None;
+        let mut ty = None;
+        let mut after_colon = false;
+        let mut inner = param.walk();
+        for part in param.children(&mut inner) {
+            if !part.is_named() {
+                after_colon |= part.kind() == ":";
+                continue;
+            }
+            if after_colon {
+                if ty.is_none() && part.kind() != "parameter_modifiers" {
+                    ty = Some(type_name(&part, source));
+                }
+            } else if part.kind() == "simple_identifier" {
+                // The last identifier before `:` is the internal name.
+                name = part.utf8_text(source.as_bytes()).ok();
+            }
+        }
+        if let Some(name) = name {
+            frame.insert(name.to_string(), ty.flatten());
+        }
+    }
+    frame
+}
+
+/// Closure parameters (`{ item in ... }`, `{ (item: T) in ... }`).
+fn lambda_frame(node: &Node, source: &str) -> Frame {
+    let mut frame = Frame::new();
+    let mut stack = vec![*node];
+    while let Some(n) = stack.pop() {
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            match child.kind() {
+                "lambda_function_type" | "lambda_function_type_parameters" => stack.push(child),
+                "lambda_parameter" => {
+                    let mut inner = child.walk();
+                    let named: Vec<Node> = child.named_children(&mut inner).collect();
+                    if let Some(name) = named
+                        .iter()
+                        .find(|c| c.kind() == "simple_identifier")
+                        .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+                    {
+                        let ty = named
+                            .iter()
+                            .rev()
+                            .find(|c| c.kind() != "simple_identifier")
+                            .and_then(|t| type_name(t, source));
+                        frame.insert(name.to_string(), ty);
+                    }
                 }
                 _ => {}
             }
         }
     }
-    None
+    frame
 }
 
-/// Extract the method name from a navigation_expression.
-/// e.g., `service.performRequest` → "performRequest"
-/// e.g., `NetworkManager.shared.fetch` → "fetch"
-/// e.g., `self.process` → "process"
-fn extract_nav_call_name(node: &Node, source: &str) -> Option<String> {
-    // navigation_expression contains navigation_suffix children
-    // The last navigation_suffix has the actual method name
-    let mut last_name: Option<String> = None;
-
-    for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
-            if child.kind() == "navigation_suffix" {
-                // navigation_suffix > "." > simple_identifier
-                for j in 0..child.child_count() {
-                    if let Some(inner) = child.child(j) {
-                        if inner.kind() == "simple_identifier" {
-                            last_name = inner.utf8_text(source.as_bytes()).ok().map(String::from);
-                        }
-                    }
-                }
-            }
+/// Nominal type named by a type node; `None` for arrays, functions, tuples.
+fn type_name(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node.utf8_text(source.as_bytes()).ok().map(String::from),
+        "user_type" => {
+            let mut cursor = node.walk();
+            let last = node
+                .children(&mut cursor)
+                .filter(|c| c.kind() == "type_identifier")
+                .last();
+            last.and_then(|t| t.utf8_text(source.as_bytes()).ok())
+                .map(String::from)
         }
+        "optional_type" | "opaque_type" | "existential_type" | "implicitly_unwrapped_type" => node
+            .child_by_field_name("wrapped")
+            .or_else(|| node.named_child(0))
+            .and_then(|t| type_name(&t, source)),
+        _ => None,
     }
+}
 
-    last_name
+/// `Type(...)` → `Type` (capitalized callee without a receiver).
+fn constructor_type(call: &Node, source: &str) -> Option<String> {
+    let callee = call.named_child(0)?;
+    if callee.kind() != "simple_identifier" {
+        return None;
+    }
+    let name = callee.utf8_text(source.as_bytes()).ok()?;
+    starts_uppercase(name).then(|| name.to_string())
+}
+
+/// The member name of a navigation expression (`a.b.name` → `name`).
+fn nav_suffix<'t>(nav: &Node<'t>) -> Option<Node<'t>> {
+    let suffix = nav.child_by_field_name("suffix").or_else(|| {
+        let mut cursor = nav.walk();
+        let last = nav
+            .children(&mut cursor)
+            .filter(|c| c.kind() == "navigation_suffix")
+            .last();
+        last
+    })?;
+    suffix
+        .child_by_field_name("suffix")
+        .or_else(|| first_child_of_kind(&suffix, "simple_identifier"))
+        .filter(|n| n.kind() == "simple_identifier")
+}
+
+fn first_child_of_kind<'t>(node: &Node<'t>, kind: &str) -> Option<Node<'t>> {
+    let mut cursor = node.walk();
+    let found = node.children(&mut cursor).find(|c| c.kind() == kind);
+    found
+}
+
+fn starts_uppercase(name: &str) -> bool {
+    name.chars().next().is_some_and(char::is_uppercase)
 }
 
 /// Result of parsing a single file.
 #[derive(Debug)]
 pub struct ParseResult {
+    /// Declarations.
     pub nodes: Vec<GraphNode>,
+    /// Containment, inheritance and extension edges.
     pub edges: Vec<GraphEdge>,
+    /// Call sites, resolved to call edges by the indexing pipeline.
+    pub calls: Vec<CallSite>,
+    /// Distinct identifiers referenced outside of call position (member
+    /// reads, type annotations, arguments), sorted.
+    pub references: Vec<String>,
 }
 
 /// Map a tree-sitter-swift node to a SymbolKind.
@@ -280,8 +729,8 @@ fn map_node_kind(node: &Node, source: &str) -> Option<SymbolKind> {
         }
         "protocol_declaration" => Some(SymbolKind::Protocol),
         "enum_declaration" => Some(SymbolKind::Enum),
-        "function_declaration" => Some(SymbolKind::Function),
-        "property_declaration" => Some(SymbolKind::Property),
+        "function_declaration" | "protocol_function_declaration" => Some(SymbolKind::Function),
+        "property_declaration" | "protocol_property_declaration" => Some(SymbolKind::Property),
         "typealias_declaration" => Some(SymbolKind::TypeAlias),
         "extension_declaration" => Some(SymbolKind::Extension),
         "enum_entry" => Some(SymbolKind::EnumCase),
@@ -302,9 +751,10 @@ fn extract_name(node: &Node, source: &str) -> Option<String> {
             {
                 return Some(child.utf8_text(source.as_bytes()).ok()?.to_string());
             }
-            // For extensions: `class_declaration > user_type > type_identifier`
+            // For extensions: `class_declaration > user_type > type_identifier`;
+            // `extension Outer.Inner` extends `Inner`.
             if kind == "user_type" {
-                return find_type_name(&child, source);
+                return type_name(&child, source).or_else(|| find_type_name(&child, source));
             }
             // For properties: `property_declaration > pattern > simple_identifier`
             if kind == "pattern" {
@@ -441,6 +891,7 @@ fn extract_inheritance(
                             end_column: None,
                         }),
                         is_implicit: false,
+                        ambiguous: false,
                     });
                 }
             }
@@ -460,7 +911,9 @@ fn extract_extension_target(
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             if child.kind() == "type_identifier" || child.kind() == "user_type" {
-                if let Some(name) = find_type_name(&child, source) {
+                if let Some(name) =
+                    type_name(&child, source).or_else(|| find_type_name(&child, source))
+                {
                     let target_id = format!("synthetic::{}", name.trim().replace(['<', '>'], ""));
                     result.edges.push(GraphEdge {
                         source: ext_id.to_string(),
@@ -474,6 +927,7 @@ fn extract_extension_target(
                             end_column: None,
                         }),
                         is_implicit: false,
+                        ambiguous: false,
                     });
                 }
                 break;
@@ -668,45 +1122,115 @@ class ViewController: UIViewController, UITableViewDelegate {
     }
 
     #[test]
-    fn extract_call_edges() {
-        let mut parser = TreeSitterParser::new().unwrap();
-        let source = r#"
+    fn extract_call_sites_with_receivers() {
+        let r = parse(
+            r#"
 class MyService {
-    func loadData() {
+    let api: ApiClient
+    private var cache = Cache()
+    func loadData(items: [Int], store: Store) {
         fetchItems()
         let x = helper.process()
-        self.update()
+        self.update(id: 1, force: true)
+        api.send(request) { _ in }
+        cache.clear()
+        store.save()
+        Logger.info("x")
+        items.map { $0 }
+        let local: Store = make()
+        local.flush()
+        let run = { }
+        run()
+        super.viewDidLoad()
+        UIView().layoutIfNeeded()
+        items.forEach { item in item.go() }
     }
     func fetchItems() {}
-    func update() {}
+    func update(id: Int, force: Bool) {}
 }
-"#;
-        let result = parser
-            .parse_source(source, &PathBuf::from("test.swift"))
-            .unwrap();
+"#,
+        );
+        let site = |name: &str| {
+            r.calls
+                .iter()
+                .find(|c| c.name == name)
+                .unwrap_or_else(|| panic!("{name} not recorded: {:?}", r.calls))
+        };
+        let typed = |t: &str| Receiver::Typed(t.to_string());
 
-        let call_edges: Vec<_> = result
+        let load_data = find(&r, "loadData");
+        assert_eq!(load_data.qualified_name, "MyService.loadData(items:store:)");
+        // `Cache()` belongs to the property initializer, the rest to `loadData`.
+        assert_eq!(site("Cache").caller, find(&r, "cache").id);
+        assert!(r
+            .calls
+            .iter()
+            .filter(|c| c.name != "Cache")
+            .all(|c| c.caller == load_data.id));
+
+        assert_eq!(site("fetchItems").receiver, Receiver::Implicit);
+        assert_eq!(site("fetchItems").scope, vec!["MyService".to_string()]);
+        assert_eq!(site("process").receiver, Receiver::Unknown);
+        let update = site("update");
+        assert_eq!(update.receiver, typed("MyService"));
+        assert_eq!(
+            update.labels,
+            vec![Some("id".to_string()), Some("force".to_string())]
+        );
+        let send = site("send");
+        assert_eq!(send.receiver, typed("ApiClient"));
+        assert_eq!(
+            (send.labels.clone(), send.trailing_closures),
+            (vec![None], 1)
+        );
+        assert_eq!(site("clear").receiver, typed("Cache"));
+        assert_eq!(site("save").receiver, typed("Store"));
+        assert_eq!(site("info").receiver, typed("Logger"));
+        assert_eq!(site("map").receiver, Receiver::Unknown);
+        assert_eq!(site("flush").receiver, typed("Store"));
+        assert_eq!(
+            site("viewDidLoad").receiver,
+            Receiver::Super("MyService".to_string())
+        );
+        assert_eq!(site("layoutIfNeeded").receiver, typed("UIView"));
+        assert_eq!(site("go").receiver, Receiver::Unknown);
+        // Calling a local closure is not a call to a declaration.
+        assert!(r.calls.iter().all(|c| c.name != "run"));
+    }
+
+    #[test]
+    fn protocol_requirements_and_nested_extensions_are_declarations() {
+        let r = parse(
+            "protocol Service: AnyObject {\n\
+                 var name: String { get }\n\
+                 func load(id: Int, _ force: Bool)\n\
+             }\n\
+             extension Outer.Inner: Service {\n\
+                 func load(id: Int, _ force: Bool) {}\n\
+             }\n",
+        );
+        assert_eq!(find(&r, "name").qualified_name, "Service.name");
+        let requirements: Vec<&str> = r
+            .nodes
+            .iter()
+            .filter(|n| n.name == "load")
+            .map(|n| n.qualified_name.as_str())
+            .collect();
+        assert_eq!(
+            requirements,
+            vec!["Service.load(id:_:)", "Inner.load(id:_:)"]
+        );
+        assert_eq!(find(&r, "Inner").kind, SymbolKind::Extension);
+        let supertypes: Vec<&str> = r
             .edges
             .iter()
-            .filter(|e| e.kind == EdgeKind::Calls)
+            .filter(|e| e.kind == EdgeKind::ConformsTo)
+            .map(|e| e.target.as_str())
             .collect();
-
-        assert!(
-            call_edges.len() >= 3,
-            "Should find at least 3 call edges, found {}",
-            call_edges.len()
+        assert_eq!(
+            supertypes,
+            vec!["synthetic::AnyObject", "synthetic::Service"]
         );
-
-        let targets: Vec<&str> = call_edges.iter().map(|e| e.target.as_str()).collect();
-        assert!(
-            targets.contains(&"name::fetchItems"),
-            "Should find fetchItems call"
-        );
-        assert!(
-            targets.contains(&"name::process"),
-            "Should find process call"
-        );
-        assert!(targets.contains(&"name::update"), "Should find update call");
     }
 
     #[test]

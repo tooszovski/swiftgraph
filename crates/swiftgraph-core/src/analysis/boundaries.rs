@@ -116,7 +116,7 @@ pub fn check_boundaries(
          FROM edges e \
          JOIN nodes n1 ON e.source = n1.id \
          JOIN nodes n2 ON e.target = n2.id \
-         WHERE n1.file IS NOT NULL AND n2.file IS NOT NULL AND n1.file != n2.file \
+         WHERE e.ambiguous = 0 AND n1.file IS NOT NULL AND n2.file IS NOT NULL AND n1.file != n2.file \
          ORDER BY n1.file, n2.file, e.source, e.target, e.kind, e.line",
     )?;
 

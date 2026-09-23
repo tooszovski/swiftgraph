@@ -20,8 +20,10 @@ pub enum StorageError {
 /// is dropped and recreated; the next index run repopulates it.
 ///
 /// History: 1 = v0.5.x (implicit rowid, nullable edge line); 2 = explicit
-/// `rid` rowid alias, `edges.line NOT NULL DEFAULT 0`, `meta` table.
-pub const SCHEMA_VERSION: i32 = 2;
+/// `rid` rowid alias, `edges.line NOT NULL DEFAULT 0`, `meta` table;
+/// 3 = `edges.ambiguous`, `name_refs` table (receiver-aware call
+/// resolution).
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// Open or create the SwiftGraph SQLite database.
 pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
@@ -29,7 +31,25 @@ pub fn open_db(path: &Path) -> Result<Connection, StorageError> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
+
+    // An outdated database is a cache: delete the file instead of dropping
+    // tables one by one (slow on multi-GB databases, and leaves the file at
+    // its old size).
+    if is_outdated(&conn)? {
+        tracing::warn!("index database schema is outdated, recreating it (reindex required)");
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut file = path.as_os_str().to_owned();
+            file.push(suffix);
+            match std::fs::remove_file(&file) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        conn = Connection::open(path)?;
+    }
 
     // Performance pragmas
     conn.execute_batch(
@@ -101,18 +121,21 @@ pub fn open_memory_db() -> Result<Connection, StorageError> {
     Ok(conn)
 }
 
-/// Create the schema, dropping an existing database built with another version.
-fn init_schema(conn: &Connection) -> Result<(), StorageError> {
+/// Whether the database has tables from another schema version.
+fn is_outdated(conn: &Connection) -> Result<bool, StorageError> {
     let version: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let has_tables: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nodes')",
         [],
         |r| r.get(0),
     )?;
-    if has_tables && version != SCHEMA_VERSION {
-        tracing::warn!(
-            "index database schema v{version} != v{SCHEMA_VERSION}, rebuilding (reindex required)"
-        );
+    Ok(has_tables && version != SCHEMA_VERSION)
+}
+
+/// Create the schema, dropping an existing database built with another version.
+fn init_schema(conn: &Connection) -> Result<(), StorageError> {
+    if is_outdated(conn)? {
+        tracing::warn!("index database schema != v{SCHEMA_VERSION}, rebuilding (reindex required)");
         drop_all(conn)?;
     }
 
@@ -206,6 +229,7 @@ mod tests {
                 end_column: None,
             }),
             is_implicit: false,
+            ambiguous: false,
         };
         queries::insert_edge(&conn, &edge).unwrap();
 

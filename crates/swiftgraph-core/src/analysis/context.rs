@@ -81,7 +81,11 @@ pub fn build_context(
             let incoming = queries::get_all_incoming(&conn, node_id, 10).unwrap_or_default();
             let outgoing = queries::get_all_outgoing(&conn, node_id, 10).unwrap_or_default();
 
-            for edge in incoming.iter().chain(outgoing.iter()) {
+            for edge in incoming
+                .iter()
+                .chain(outgoing.iter())
+                .filter(|e| !e.ambiguous)
+            {
                 let other = if edge.source == *node_id {
                     &edge.target
                 } else {

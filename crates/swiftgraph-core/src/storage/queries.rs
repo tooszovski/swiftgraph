@@ -51,8 +51,8 @@ pub fn upsert_node(conn: &Connection, node: &GraphNode) -> SqlResult<()> {
 /// Insert an edge into the database.
 pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
     conn.execute(
-        r#"INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"#,
+        r#"INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit, ambiguous)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
         params![
             edge.source,
             edge.target,
@@ -61,13 +61,15 @@ pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
             edge.location.as_ref().map_or(0, |l| l.line),
             edge.location.as_ref().map(|l| l.column),
             edge.is_implicit as i32,
+            edge.ambiguous as i32,
         ],
     )?;
     Ok(())
 }
 
 /// Remove a file and everything derived from it: its nodes, edges recorded
-/// in it, and location-less edges (e.g. containment) touching its nodes.
+/// in it, location-less edges (e.g. containment) touching its nodes and the
+/// names of its unresolved call sites.
 ///
 /// Edges from *other* files that target this file's nodes are kept; they are
 /// refreshed when those files are reindexed.
@@ -79,6 +81,7 @@ pub fn delete_file_data(conn: &Connection, path: &str) -> SqlResult<()> {
         [path],
     )?;
     conn.execute("DELETE FROM nodes WHERE file = ?1", [path])?;
+    conn.execute("DELETE FROM name_refs WHERE file = ?1", [path])?;
     Ok(())
 }
 
@@ -220,7 +223,7 @@ pub fn get_references(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResu
 /// Get type hierarchy edges (conformsTo, inheritsFrom).
 pub fn get_subtypes(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
     let mut stmt = conn.prepare(
-        r#"SELECT source, target, kind, file, line, col, is_implicit
+        r#"SELECT source, target, kind, file, line, col, is_implicit, ambiguous
            FROM edges
            WHERE target = ?1 AND kind IN ('conformsTo', 'inheritsFrom')
            LIMIT ?2"#,
@@ -232,7 +235,7 @@ pub fn get_subtypes(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult
 /// Get supertypes of a symbol.
 pub fn get_supertypes(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
     let mut stmt = conn.prepare(
-        r#"SELECT source, target, kind, file, line, col, is_implicit
+        r#"SELECT source, target, kind, file, line, col, is_implicit, ambiguous
            FROM edges
            WHERE source = ?1 AND kind IN ('conformsTo', 'inheritsFrom')
            LIMIT ?2"#,
@@ -274,11 +277,11 @@ fn get_edges_by(
 ) -> SqlResult<Vec<GraphEdge>> {
     let sql = if let Some(kind) = kind_filter {
         format!(
-            "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE {field} = ?1 AND kind = '{kind}' LIMIT ?2"
+            "SELECT source, target, kind, file, line, col, is_implicit, ambiguous FROM edges WHERE {field} = ?1 AND kind = '{kind}' LIMIT ?2"
         )
     } else {
         format!(
-            "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE {field} = ?1 LIMIT ?2"
+            "SELECT source, target, kind, file, line, col, is_implicit, ambiguous FROM edges WHERE {field} = ?1 LIMIT ?2"
         )
     };
 
@@ -342,6 +345,7 @@ fn row_to_edge(row: &rusqlite::Row) -> SqlResult<GraphEdge> {
             end_column: None,
         }),
         is_implicit: row.get::<_, i32>(6)? != 0,
+        ambiguous: row.get::<_, i32>(7)? != 0,
     })
 }
 
@@ -417,7 +421,7 @@ pub fn get_files(
 /// Get all extensions of a type (edges with kind = 'extendsType' targeting the symbol).
 pub fn get_extensions(conn: &Connection, symbol_id: &str, limit: u32) -> SqlResult<Vec<GraphEdge>> {
     let mut stmt = conn.prepare(
-        r#"SELECT source, target, kind, file, line, col, is_implicit
+        r#"SELECT source, target, kind, file, line, col, is_implicit, ambiguous
            FROM edges WHERE target = ?1 AND kind = 'extendsType'
            LIMIT ?2"#,
     )?;
@@ -435,9 +439,9 @@ pub fn get_conformances(
     limit: u32,
 ) -> SqlResult<Vec<GraphEdge>> {
     let sql = if direction == "conformedBy" {
-        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE target = ?1 AND kind = 'conformsTo' LIMIT ?2"
+        "SELECT source, target, kind, file, line, col, is_implicit, ambiguous FROM edges WHERE target = ?1 AND kind = 'conformsTo' LIMIT ?2"
     } else {
-        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE source = ?1 AND kind = 'conformsTo' LIMIT ?2"
+        "SELECT source, target, kind, file, line, col, is_implicit, ambiguous FROM edges WHERE source = ?1 AND kind = 'conformsTo' LIMIT ?2"
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![symbol_id, limit], row_to_edge)?;
@@ -476,19 +480,19 @@ pub fn get_all_outgoing(
     get_edges_by(conn, "source", symbol_id, None, limit)
 }
 
-/// Count incoming edges to a symbol.
+/// Count incoming edges to a symbol, ignoring ambiguous call edges.
 pub fn count_incoming(conn: &Connection, symbol_id: &str) -> SqlResult<u32> {
     conn.query_row(
-        "SELECT COUNT(*) FROM edges WHERE target = ?1",
+        "SELECT COUNT(*) FROM edges WHERE target = ?1 AND ambiguous = 0",
         params![symbol_id],
         |r| r.get(0),
     )
 }
 
-/// Count outgoing edges from a symbol.
+/// Count outgoing edges from a symbol, ignoring ambiguous call edges.
 pub fn count_outgoing(conn: &Connection, symbol_id: &str) -> SqlResult<u32> {
     conn.query_row(
-        "SELECT COUNT(*) FROM edges WHERE source = ?1",
+        "SELECT COUNT(*) FROM edges WHERE source = ?1 AND ambiguous = 0",
         params![symbol_id],
         |r| r.get(0),
     )
@@ -656,7 +660,8 @@ pub fn get_nodes_by_path_prefix(
     rows.collect()
 }
 
-/// Get cross-file edges: returns (source_file, target_file) pairs.
+/// Distinct (source_file, target_file) pairs of non-ambiguous cross-file
+/// edges, at most `limit`.
 pub fn get_cross_file_edges(
     conn: &Connection,
     path_filter: Option<&str>,
@@ -670,7 +675,7 @@ pub fn get_cross_file_edges(
              FROM edges e \
              JOIN nodes n1 ON e.source = n1.id \
              JOIN nodes n2 ON e.target = n2.id \
-             WHERE n1.file LIKE ?1 AND n2.file LIKE ?1 AND n1.file != n2.file \
+             WHERE e.ambiguous = 0 AND n1.file LIKE ?1 AND n2.file LIKE ?1 AND n1.file != n2.file \
              LIMIT ?2"
                     .to_string(),
                 vec![
@@ -684,7 +689,7 @@ pub fn get_cross_file_edges(
              FROM edges e \
              JOIN nodes n1 ON e.source = n1.id \
              JOIN nodes n2 ON e.target = n2.id \
-             WHERE n1.file != n2.file \
+             WHERE e.ambiguous = 0 AND n1.file != n2.file \
              LIMIT ?1"
                     .to_string(),
                 vec![Box::new(limit) as Box<dyn rusqlite::types::ToSql>],

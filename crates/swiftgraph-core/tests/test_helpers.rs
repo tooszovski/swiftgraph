@@ -57,6 +57,7 @@ pub fn create_random_graph(node_count: usize, edges: &[(usize, usize)]) -> Conne
                     end_column: None,
                 }),
                 is_implicit: false,
+                ambiguous: false,
             };
             // Ignore duplicates (same source/target/kind/line combo)
             let _ = queries::insert_edge(&conn, &edge);

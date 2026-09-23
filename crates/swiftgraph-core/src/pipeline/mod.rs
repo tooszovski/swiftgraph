@@ -1,3 +1,5 @@
+mod resolve;
+
 use std::path::Path;
 
 use rayon::prelude::*;
@@ -163,7 +165,9 @@ pub fn index_directory_with_options(
 
     // On force reindex, start from an empty graph (FTS is kept in sync by triggers)
     if force {
-        conn.execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM files;")?;
+        conn.execute_batch(
+            "DELETE FROM edges; DELETE FROM name_refs; DELETE FROM nodes; DELETE FROM files;",
+        )?;
     }
 
     // Load config for include/exclude globs
@@ -315,12 +319,15 @@ pub fn index_directory_with_options(
         }
     }
 
-    // 5. Resolve name:: edge targets to real node IDs (creates cross-file edges)
-    let resolved = resolve_name_edges(&conn)?;
-    if resolved > 0 {
-        info!("Resolved {resolved} call edges to real targets");
-        edges_added += resolved;
+    // 5. Resolve tree-sitter call sites against all declarations in the DB
+    let calls = resolve_calls(&conn, &parse_results, &config.resolution)?;
+    if calls.edges > 0 || calls.unresolved > 0 {
+        info!(
+            "Resolved calls: {} edges ({} ambiguous), {} call sites without a confident target",
+            calls.edges, calls.ambiguous, calls.unresolved
+        );
     }
+    edges_added += calls.edges;
 
     let files_indexed = index_store_files.len() + ts_files_indexed;
     let ts_files_present = !files_for_treesitter_empty;
@@ -412,92 +419,81 @@ fn purge_missing_files(
     Ok(purged)
 }
 
-/// Resolve `name::` prefixed edge targets to real node IDs.
+/// Counters of [`resolve_calls`].
+#[derive(Debug, Default)]
+struct CallStats {
+    edges: usize,
+    ambiguous: usize,
+    unresolved: usize,
+}
+
+/// Turn the call sites of freshly parsed files into `calls` edges.
 ///
-/// After tree-sitter parsing, call edges use `name::functionName` as target.
-/// This pass finds all such edges, looks up matching nodes by name, and creates
-/// real edges to the resolved targets. The unresolved `name::` edges are then deleted.
-fn resolve_name_edges(conn: &rusqlite::Connection) -> Result<usize, PipelineError> {
-    struct UnresolvedEdge {
-        source: String,
-        target: String,
-        kind: String,
-        file: Option<String>,
-        line: Option<u32>,
-        col: Option<u32>,
-        is_implicit: bool,
+/// Resolution runs against every declaration in the database, so calls into
+/// unchanged files resolve too. See [`resolve`] for the rules.
+fn resolve_calls(
+    conn: &rusqlite::Connection,
+    parsed: &[(
+        std::path::PathBuf,
+        String,
+        crate::tree_sitter::parser::ParseResult,
+    )],
+    config: &crate::config::ResolutionConfig,
+) -> Result<CallStats, PipelineError> {
+    let mut stats = CallStats::default();
+    if parsed
+        .iter()
+        .all(|(_, _, r)| r.calls.is_empty() && r.references.is_empty())
+    {
+        return Ok(stats);
     }
+    let resolver = resolve::Resolver::load(conn, config)?;
 
-    // Collect all unresolved edges
-    let mut stmt = conn.prepare(
-        "SELECT source, target, kind, file, line, col, is_implicit FROM edges WHERE target LIKE 'name::%'",
-    )?;
-    let unresolved: Vec<UnresolvedEdge> = stmt
-        .query_map([], |row| {
-            Ok(UnresolvedEdge {
-                source: row.get(0)?,
-                target: row.get(1)?,
-                kind: row.get(2)?,
-                file: row.get(3)?,
-                line: row.get(4)?,
-                col: row.get(5)?,
-                is_implicit: row.get(6)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if unresolved.is_empty() {
-        return Ok(0);
-    }
-
-    // Build a lookup of name → [node IDs] from all indexed nodes
-    let mut name_to_ids: std::collections::HashMap<String, Vec<String>> =
-        std::collections::HashMap::new();
-    let mut node_stmt = conn.prepare("SELECT id, name FROM nodes WHERE kind IN ('function', 'method', 'property', 'class', 'struct', 'enum', 'protocol', 'typeAlias')")?;
-    let rows = node_stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })?;
-    for row in rows.flatten() {
-        name_to_ids.entry(row.1).or_default().push(row.0);
-    }
-
-    conn.execute("BEGIN TRANSACTION", [])?;
-
-    // Delete all unresolved name:: edges
-    conn.execute("DELETE FROM edges WHERE target LIKE 'name::%'", [])?;
-
-    let mut resolved = 0;
-    let mut insert_stmt = conn.prepare(
-        "INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-    )?;
-
-    for edge in &unresolved {
-        let name = edge.target.strip_prefix("name::").unwrap_or(&edge.target);
-        if let Some(target_ids) = name_to_ids.get(name) {
-            for target_id in target_ids {
-                // Skip self-edges (calling yourself)
-                if *target_id == edge.source {
-                    continue;
-                }
-                insert_stmt.execute(rusqlite::params![
-                    edge.source,
-                    target_id,
-                    edge.kind,
-                    edge.file,
-                    edge.line.unwrap_or(0),
-                    edge.col,
-                    edge.is_implicit
-                ])?;
-                resolved += 1;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut insert = tx.prepare(
+            "INSERT OR IGNORE INTO edges (source, target, kind, file, line, col, is_implicit, ambiguous)
+             VALUES (?1, ?2, 'calls', ?3, ?4, ?5, 0, ?6)",
+        )?;
+        let mut refs =
+            tx.prepare("INSERT OR IGNORE INTO name_refs (file, name) VALUES (?1, ?2)")?;
+        // Names read or used as types; only those declared in the project matter.
+        for (path, _, result) in parsed {
+            let file = path.to_string_lossy();
+            for name in result.references.iter().filter(|n| resolver.is_declared(n)) {
+                refs.execute(rusqlite::params![file, name])?;
             }
         }
-        // If no match found, the edge is silently dropped (SDK functions, etc.)
+        for call in parsed.iter().flat_map(|(_, _, r)| &r.calls) {
+            let (targets, ambiguous) = match resolver.resolve(call) {
+                resolve::Resolution::Confident(t) => (t, false),
+                resolve::Resolution::Ambiguous(t) => (t, true),
+                resolve::Resolution::Unresolved(known) => {
+                    if known {
+                        refs.execute(rusqlite::params![call.location.file, call.name])?;
+                        stats.unresolved += 1;
+                    }
+                    continue;
+                }
+            };
+            for target in targets {
+                let added = insert.execute(rusqlite::params![
+                    call.caller,
+                    target,
+                    call.location.file,
+                    call.location.line,
+                    call.location.column,
+                    ambiguous
+                ])?;
+                stats.edges += added;
+                if ambiguous {
+                    stats.ambiguous += added;
+                }
+            }
+        }
     }
-
-    conn.execute("COMMIT", [])?;
-
-    Ok(resolved)
+    tx.commit()?;
+    Ok(stats)
 }
 
 /// Enrich tree-sitter nodes of `files` with swift-syntax data: attributes,

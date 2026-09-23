@@ -37,6 +37,9 @@ pub struct ImpactResult {
     pub risk_level: String,
     /// Breakdown by edge kind.
     pub breakdown: ImpactBreakdown,
+    /// Possible direct callers through ambiguous call edges (receiver type
+    /// unknown). Not counted in the impact numbers.
+    pub ambiguous_callers: Vec<String>,
 }
 
 /// Breakdown of impact by relationship type.
@@ -80,8 +83,13 @@ pub fn analyze_impact_from_conn(
 
     let direct_edges = queries::get_all_incoming(conn, symbol_id, 500)?;
     let mut direct_ids: HashSet<String> = HashSet::new();
+    let mut ambiguous_callers: Vec<String> = Vec::new();
 
     for edge in &direct_edges {
+        if edge.ambiguous {
+            ambiguous_callers.push(edge.source.clone());
+            continue;
+        }
         direct_ids.insert(edge.source.clone());
         match edge.kind.as_str() {
             "calls" => breakdown.callers.push(edge.source.clone()),
@@ -104,7 +112,7 @@ pub fn analyze_impact_from_conn(
         let mut next_frontier = Vec::new();
         for id in &frontier {
             let incoming = queries::get_all_incoming(conn, id, 100).unwrap_or_default();
-            for edge in incoming {
+            for edge in incoming.into_iter().filter(|e| !e.ambiguous) {
                 if all_affected.insert(edge.source.clone()) {
                     next_frontier.push(edge.source);
                 }
@@ -153,6 +161,8 @@ pub fn analyze_impact_from_conn(
         list.sort();
         list.dedup();
     }
+    ambiguous_callers.sort();
+    ambiguous_callers.dedup();
 
     Ok(ImpactResult {
         symbol: symbol_id.to_owned(),
@@ -162,6 +172,7 @@ pub fn analyze_impact_from_conn(
         affected_tests: sorted(test_files),
         risk_level,
         breakdown,
+        ambiguous_callers,
     })
 }
 

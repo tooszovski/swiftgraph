@@ -53,6 +53,7 @@ fn edge(s: String, t: String, kind: EdgeKind, file: String, line: u32) -> GraphE
             end_column: None,
         }),
         is_implicit: false,
+        ambiguous: false,
     }
 }
 

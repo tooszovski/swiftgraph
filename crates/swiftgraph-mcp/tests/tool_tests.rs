@@ -125,6 +125,7 @@ fn make_edge(source: &str, target: &str, kind: EdgeKind) -> GraphEdge {
         kind,
         location: None,
         is_implicit: false,
+        ambiguous: false,
     }
 }
 

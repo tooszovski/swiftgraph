@@ -188,6 +188,7 @@ fn process_occurrence(
                 kind,
                 location: location.clone(),
                 is_implicit: false,
+                ambiguous: false,
             });
         };
         if rel.roles & symbol_role::REL_CALLEDBY != 0 {

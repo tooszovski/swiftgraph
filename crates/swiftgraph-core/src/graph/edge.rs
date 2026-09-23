@@ -15,6 +15,12 @@ pub struct GraphEdge {
     pub location: Option<Location>,
     /// Whether the relationship was synthesized by the compiler.
     pub is_implicit: bool,
+    /// Whether the target is one of several equally plausible candidates
+    /// (tree-sitter call resolution without a known receiver type). Such
+    /// edges are kept for navigation but ignored by graph analytics
+    /// (cycles, complexity, impact, coupling).
+    #[serde(default)]
+    pub ambiguous: bool,
 }
 
 /// Kind of relationship between two symbols.
@@ -100,6 +106,7 @@ mod tests {
                 end_column: None,
             }),
             is_implicit: false,
+            ambiguous: false,
         };
 
         let json = serde_json::to_string(&edge).unwrap();

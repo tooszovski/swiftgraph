@@ -104,7 +104,7 @@ pub fn analyze_coupling(
     let mut ce_sets: HashMap<String, HashSet<String>> = HashMap::new();
 
     {
-        let mut stmt = conn.prepare("SELECT source, target FROM edges")?;
+        let mut stmt = conn.prepare("SELECT source, target FROM edges WHERE ambiguous = 0")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;

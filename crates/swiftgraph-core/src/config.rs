@@ -35,6 +35,31 @@ pub struct Config {
     /// `Package.swift`, e.g. `"ios"`. When unset it is auto-detected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_dir: Option<String>,
+    /// Call resolution settings for tree-sitter mode.
+    #[serde(default)]
+    pub resolution: ResolutionConfig,
+}
+
+/// How tree-sitter call sites are resolved to project symbols.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ResolutionConfig {
+    /// Maximum number of equally plausible targets for which a call still
+    /// gets (ambiguous) edges. Calls with more candidates get no edges; their
+    /// names are only recorded as possibly used.
+    #[serde(default = "default_max_candidates")]
+    pub max_candidates: usize,
+}
+
+fn default_max_candidates() -> usize {
+    3
+}
+
+impl Default for ResolutionConfig {
+    fn default() -> Self {
+        Self {
+            max_candidates: default_max_candidates(),
+        }
+    }
 }
 
 fn default_version() -> u32 {
@@ -58,6 +83,7 @@ impl Default for Config {
             ],
             index_store_path: "auto".into(),
             project_dir: None,
+            resolution: ResolutionConfig::default(),
         }
     }
 }

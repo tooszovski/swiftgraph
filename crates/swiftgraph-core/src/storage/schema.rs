@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS edges (
     line        INTEGER NOT NULL DEFAULT 0,  -- 0 = no location (e.g. tree-sitter containment)
     col         INTEGER,
     is_implicit INTEGER NOT NULL DEFAULT 0,
+    ambiguous   INTEGER NOT NULL DEFAULT 0,  -- 1 = one of several plausible call targets
     PRIMARY KEY (source, target, kind, line)
     -- No FK on source/target: targets may reference SDK symbols not in our index
 );
@@ -57,6 +58,15 @@ CREATE TABLE IF NOT EXISTS diagnostics (
     PRIMARY KEY (file, id, line)
 );
 
+-- Project names referenced in a file without a confident edge: calls with an
+-- unknown receiver or too many candidates, member reads, type references.
+-- Dead-code treats project symbols with such names as possibly used.
+CREATE TABLE IF NOT EXISTS name_refs (
+    file TEXT NOT NULL,
+    name TEXT NOT NULL,
+    PRIMARY KEY (file, name)
+) WITHOUT ROWID;
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -70,6 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_container ON nodes(container_usr);
 CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
 CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+CREATE INDEX IF NOT EXISTS idx_name_refs_name ON name_refs(name);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_category ON diagnostics(category);
 "#;

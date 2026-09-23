@@ -77,3 +77,25 @@ fn database_location_can_be_overridden() {
     assert!(db.is_file());
     assert!(!dir.path().join(".swiftgraph/db.sqlite").exists());
 }
+
+#[test]
+fn index_summary_reports_the_graph_in_the_database() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("A.swift"),
+        "import Foundation\nstruct A {\n    func f() { g() }\n    func g() {}\n}\n",
+    )
+    .unwrap();
+    let db = dir.path().join("db.sqlite");
+    let out = swiftgraph()
+        .args(["index", "--project", "."])
+        .env("SWIFTGRAPH_DB", &db)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let conn = swiftgraph_core::storage::open_db(&db).unwrap();
+    let stats = swiftgraph_core::storage::queries::get_stats(&conn).unwrap();
+    let expected = format!("{} nodes, {} edges", stats.node_count, stats.edge_count);
+    assert!(stderr.contains(&expected), "{stderr}\nexpected: {expected}");
+}

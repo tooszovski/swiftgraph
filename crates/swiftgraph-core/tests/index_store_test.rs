@@ -266,6 +266,9 @@ fn hybrid_nodes_are_stitched_with_tree_sitter_details() {
     .unwrap();
     assert!(result.strategy.uses_index_store());
     let conn = storage::open_db(&db).unwrap();
+    let stats = queries::get_stats(&conn).unwrap();
+    assert_eq!(result.total_nodes, stats.node_count as usize);
+    assert_eq!(result.total_edges, stats.edge_count as usize);
 
     let vm = queries::resolve_symbol(&conn, "CounterViewModel")
         .unwrap()

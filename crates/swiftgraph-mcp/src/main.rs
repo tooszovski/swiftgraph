@@ -537,12 +537,12 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
     }
 
     eprintln!(
-        "Done ({:?}): {} files scanned, {} indexed, {} nodes, {} edges",
+        "Done ({:?}): {} files scanned, {} indexed; graph: {} nodes, {} edges",
         result.strategy,
         result.files_scanned,
         result.files_indexed,
-        result.nodes_added,
-        result.edges_added
+        result.total_nodes,
+        result.total_edges
     );
     Ok(())
 }

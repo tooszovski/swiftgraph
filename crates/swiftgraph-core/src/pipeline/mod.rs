@@ -43,6 +43,10 @@ pub struct IndexResult {
     pub nodes_enriched: usize,
     /// Why an Index Store that exists was not used, if any.
     pub index_store_note: Option<String>,
+    /// Nodes in the database after the run.
+    pub total_nodes: usize,
+    /// Edges in the database after the run.
+    pub total_edges: usize,
 }
 
 /// Whether the pipeline enriches tree-sitter declarations with swift-syntax.
@@ -433,6 +437,10 @@ pub fn index_directory_with_options(
         strategy,
         nodes_enriched,
         index_store_note: None,
+        // Per-run counters miss stitched imports and count edges the
+        // database ignored as duplicates; report what is stored.
+        total_nodes: count_rows(&conn, "nodes")?,
+        total_edges: count_rows(&conn, "edges")?,
     })
 }
 
@@ -537,6 +545,11 @@ fn restrict_to_project(
     });
     data.file_nodes.retain(|file, _| keep(file));
     data
+}
+
+fn count_rows(conn: &rusqlite::Connection, table: &str) -> Result<usize, PipelineError> {
+    let n: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?;
+    Ok(n as usize)
 }
 
 /// Write Index Store data to the database.

@@ -111,6 +111,27 @@ pub fn detect_project(root: &Path) -> Result<ProjectInfo, ProjectError> {
     Err(ProjectError::NotFound(root))
 }
 
+/// Resolve the Index Store to use for `root`, honouring `index_store_path`
+/// from `.swiftgraph/config.json` (`"auto"`, `"none"`, or a path).
+///
+/// Returns `None` when the store is disabled, the configured path does not
+/// exist, or auto-detection finds nothing. Never fails.
+pub fn resolve_index_store(root: &Path) -> Option<PathBuf> {
+    use crate::config::{Config, IndexStoreSetting};
+    match Config::load(root).index_store_setting(root) {
+        IndexStoreSetting::Disabled => None,
+        IndexStoreSetting::Path(p) => {
+            if p.is_dir() {
+                Some(p)
+            } else {
+                tracing::warn!("configured index_store_path {} not found", p.display());
+                None
+            }
+        }
+        IndexStoreSetting::Auto => detect_project(root).ok()?.index_store_path,
+    }
+}
+
 /// Check a single directory for project markers (no recursion).
 fn detect_in_dir(dir: &Path) -> Option<ProjectInfo> {
     if dir.join("Tuist").is_dir() {
@@ -305,5 +326,44 @@ mod tests {
 
         let info = detect_project(dir.path()).unwrap();
         assert_eq!(info.project_type, ProjectType::Spm);
+    }
+}
+
+#[cfg(test)]
+mod index_store_resolution_tests {
+    use super::*;
+
+    fn write_config(root: &Path, json: &str) {
+        std::fs::create_dir_all(root.join(".swiftgraph")).unwrap();
+        std::fs::write(root.join(".swiftgraph/config.json"), json).unwrap();
+    }
+
+    #[test]
+    fn explicit_index_store_path_from_config_is_used() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Package.swift"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("custom/store")).unwrap();
+        write_config(dir.path(), r#"{"index_store_path": "custom/store"}"#);
+
+        let store = resolve_index_store(dir.path()).unwrap();
+        assert!(store.ends_with("custom/store"));
+    }
+
+    #[test]
+    fn index_store_can_be_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Package.swift"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join(".build/index/store")).unwrap();
+        assert!(resolve_index_store(dir.path()).is_some());
+
+        write_config(dir.path(), r#"{"index_store_path": "none"}"#);
+        assert!(resolve_index_store(dir.path()).is_none());
+    }
+
+    #[test]
+    fn missing_explicit_path_degrades_to_none() {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), r#"{"index_store_path": "nope"}"#);
+        assert!(resolve_index_store(dir.path()).is_none());
     }
 }

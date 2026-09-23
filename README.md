@@ -312,11 +312,13 @@ swiftgraph audit --format sarif > out.sarif  # SARIF (GitHub Code Scanning, Sona
 ```json
 {
   "version": 1,
-  "include": ["Sources/**/*.swift", "Tests/**/*.swift"],
-  "exclude": ["**/Generated/**", "**/Pods/**", "**/.build/**"],
+  "include": [],
+  "exclude": ["**/Generated/**", "**/Pods/**", "**/.build/**", "**/DerivedData/**"],
   "index_store_path": "auto"
 }
 ```
+
+An empty `include` means every `.swift` file under the project root that no `exclude` glob matches. Globs are matched against paths relative to the root, for example `"include": ["App/**/*.swift"]`.
 
 If the Xcode project or `Package.swift` is not in the root (for example, it lives in `./ios`), SwiftGraph finds it up to three levels deep, skipping `.build`, `Pods`, `DerivedData` and `node_modules`. To pin it explicitly, add `"project_dir": "ios"`.
 
@@ -325,7 +327,7 @@ If the Xcode project or `Package.swift` is not in the root (for example, it live
 SwiftGraph works in two modes:
 
 - **tree-sitter only** (default) — no build required, parses Swift source directly. Captures declarations, call edges, conformances, extensions.
-- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. Set `index_store_path` to `"auto"` (discovers via `xcrun`) or provide an explicit path.
+- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. `index_store_path` accepts `"auto"` (default: `.build/index/store` for SwiftPM, `~/Library/Developer/Xcode/DerivedData/<Project>-*/Index.noindex/DataStore` for Xcode), `"none"` to force tree-sitter only, or an explicit path (relative to the project root). `swiftgraph index --index-store-path` overrides it.
 
 ## Architecture
 

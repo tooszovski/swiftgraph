@@ -412,25 +412,7 @@ fn get_project_root(path: Option<PathBuf>) -> PathBuf {
 }
 
 fn cmd_init(root: &Path) -> Result<()> {
-    let config_dir = root.join(".swiftgraph");
-    std::fs::create_dir_all(&config_dir)?;
-
-    let config_path = config_dir.join("config.json");
-    if !config_path.exists() {
-        let config = serde_json::json!({
-            "version": 1,
-            "include": ["Sources/**/*.swift", "Tests/**/*.swift"],
-            "exclude": ["**/Generated/**", "**/Pods/**", "**/.build/**"],
-            "index_store_path": "auto",
-            "swift_syntax_path": "auto",
-            "audit": {
-                "enabled_categories": ["all"],
-                "severity_min": "medium",
-                "exclude_rules": []
-            }
-        });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
-    }
+    let config_path = swiftgraph_core::config::Config::write_default(root)?;
 
     // Detect project
     match swiftgraph_core::project::detect_project(root) {
@@ -460,12 +442,10 @@ fn cmd_index(root: &Path, force: bool, index_store_path: Option<&Path>) -> Resul
     let db_path = root.join(".swiftgraph/db.sqlite");
     eprintln!("Indexing {}...", root.display());
 
-    // Auto-detect Index Store from project info if not provided
-    let store_path = index_store_path.map(|p| p.to_path_buf()).or_else(|| {
-        swiftgraph_core::project::detect_project(root)
-            .ok()
-            .and_then(|info| info.index_store_path)
-    });
+    // CLI flag wins, then config.json `index_store_path`, then auto-detection
+    let store_path = index_store_path
+        .map(|p| p.to_path_buf())
+        .or_else(|| swiftgraph_core::project::resolve_index_store(root));
 
     if store_path.is_none() {
         eprintln!("⚠ No Index Store found — using tree-sitter fallback (less accurate).");

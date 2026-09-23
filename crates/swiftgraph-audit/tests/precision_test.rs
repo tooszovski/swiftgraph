@@ -293,3 +293,36 @@ struct V: View {
 "#;
     assert_eq!(found(&check(&rule, src)), vec![(4, Severity::Advisory)]);
 }
+
+#[test]
+fn arch005_is_low_for_combine_only_published() {
+    let rule = rules::swiftui_arch::PublishedWithoutObservable;
+    let facts = ProjectFacts::from_sources(&[
+        "final class ChildModel: BaseModel, ObservableObject {}\n",
+        "struct Screen: View {\n    @ObservedObject var model: WatchedModel\n}\n",
+    ]);
+    let source = r#"
+final class Processor {
+    @Published private(set) var state = 0
+    var statePublisher: AnyPublisher<Int, Never> { $state.eraseToAnyPublisher() }
+}
+class BaseModel {
+    @Published var items: [Int] = []
+}
+final class WatchedModel: NSObject {
+    @Published var value = 0
+}
+"#;
+    let mut parser = rules::swift_parser().unwrap();
+    let tree = parser.parse(source, None).unwrap();
+    let ctx = FileContext {
+        file_path: "Sample.swift",
+        source,
+        tree: &tree,
+        project: &facts,
+    };
+    assert_eq!(
+        found(&rule.check(&ctx)),
+        vec![(2, Severity::Low), (9, Severity::High)]
+    );
+}

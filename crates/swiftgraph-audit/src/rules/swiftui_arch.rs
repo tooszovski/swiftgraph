@@ -239,7 +239,10 @@ impl AuditRule for TooManyStateProperties {
 ///
 /// Conformance may be indirect: through a project protocol
 /// (`protocol CoordinatorObject: ObservableObject`), a superclass, or an
-/// extension in another file.
+/// extension in another file; base classes whose subclasses add
+/// ObservableObject are skipped. High when a SwiftUI view observes the
+/// class (it will not update); low otherwise, where `@Published` serves as
+/// a Combine publisher (`$value`).
 pub struct PublishedWithoutObservable;
 
 impl AuditRule for PublishedWithoutObservable {
@@ -287,12 +290,26 @@ impl AuditRule for PublishedWithoutObservable {
                 crate::rules::has_attribute(node, src, "Published")
             });
 
+            // A base class whose subclass adds ObservableObject
+            if crate::rules::decl_name(decl, ctx.source)
+                .is_some_and(|n| ctx.project.has_subtype_inheriting(&n, "ObservableObject"))
+            {
+                continue;
+            }
+            // Not observed by SwiftUI: `@Published` works as a Combine publisher
+            let observed = crate::rules::decl_name(decl, ctx.source)
+                .is_some_and(|n| ctx.project.is_observed(&n));
+            let severity = if observed {
+                self.severity()
+            } else {
+                Severity::Low
+            };
             if !published_props.is_empty() {
                 let name = crate::rules::decl_name(decl, ctx.source).unwrap_or_default();
                 issues.push(AuditIssue {
                     id: format!("{}:{}", self.id(), ctx.file_path),
                     category: self.category(),
-                    severity: self.severity(),
+                    severity,
                     rule: self.id().to_string(),
                     message: format!(
                         "`{name}` has @Published properties but doesn't conform to ObservableObject"

@@ -36,6 +36,9 @@ pub struct ProjectFacts {
     supertypes: std::collections::HashMap<String, Vec<String>>,
     /// Type name -> declaration keyword (`class`, `struct`, `enum`, ...).
     kinds: std::collections::HashMap<String, String>,
+    /// Types held by SwiftUI observation wrappers (`@ObservedObject`,
+    /// `@StateObject`, `@EnvironmentObject`).
+    observed: std::collections::HashSet<String>,
 }
 
 impl ProjectFacts {
@@ -52,7 +55,23 @@ impl ProjectFacts {
     pub fn scan(source: &str) -> Self {
         static DECL: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
         static KIND: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
+        static OBSERVED: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
         let mut facts = Self::default();
+        if let Some(re) = OBSERVED
+            .get_or_init(|| {
+                regex::Regex::new(
+                    r"@(?:ObservedObject|StateObject|EnvironmentObject)\b[^\n]*?\bvar\s+\w+\s*(?::\s*([A-Za-z_]\w*)|=\s*([A-Za-z_]\w*)\s*\()",
+                )
+                .ok()
+            })
+            .as_ref()
+        {
+            for caps in re.captures_iter(source) {
+                if let Some(ty) = caps.get(1).or_else(|| caps.get(2)) {
+                    facts.observed.insert(ty.as_str().to_string());
+                }
+            }
+        }
         if let Some(re) = KIND
             .get_or_init(|| {
                 regex::Regex::new(
@@ -109,6 +128,7 @@ impl ProjectFacts {
 
     /// Add another file's facts.
     pub fn merge(&mut self, other: Self) {
+        self.observed.extend(other.observed);
         for (name, kind) in other.kinds {
             self.kinds.entry(name).or_insert(kind);
         }
@@ -120,6 +140,19 @@ impl ProjectFacts {
                 }
             }
         }
+    }
+
+    /// Whether a SwiftUI view observes the type (`@ObservedObject var x: T`,
+    /// `@StateObject var x = T()`, `@EnvironmentObject var x: T`).
+    pub fn is_observed(&self, name: &str) -> bool {
+        self.observed.contains(name)
+    }
+
+    /// Whether some project type inheriting from `name` conforms to `target`.
+    pub fn has_subtype_inheriting(&self, name: &str, target: &str) -> bool {
+        self.supertypes.iter().any(|(sub, parents)| {
+            sub != name && parents.iter().any(|p| p == name) && self.inherits(sub, target)
+        })
     }
 
     /// Declaration keyword of a project type, if declared anywhere.

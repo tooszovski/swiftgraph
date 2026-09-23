@@ -379,6 +379,8 @@ const LIBRARY_NAMES: &[&str] = &[
 /// A project declaration a call may resolve to.
 struct Target {
     id: String,
+    /// Base name.
+    name: String,
     /// Kind label as stored (`function`, `property`, `class`, ...).
     kind: String,
     file: String,
@@ -484,6 +486,7 @@ impl Resolver {
             let idx = resolver.targets.len();
             resolver.targets.push(Target {
                 id,
+                name: base.clone(),
                 kind,
                 file,
                 private: matches!(access.as_str(), "Private" | "FilePrivate"),
@@ -579,6 +582,29 @@ impl Resolver {
         self.names.contains(name)
     }
 
+    /// Initializers of a type candidate that fit the call's arguments, or
+    /// the type itself (implicit memberwise/default initializers).
+    fn constructor_targets(&self, idx: usize, call: &CallSite) -> Vec<usize> {
+        let target = &self.targets[idx];
+        if !matches!(target.kind.as_str(), "class" | "struct" | "enum") {
+            return vec![idx];
+        }
+        let fitting: Vec<usize> = self
+            .members
+            .get(&target.name)
+            .and_then(|m| m.get("init"))
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|i| argument_fit(&self.targets[*i], call).is_some())
+            .collect();
+        if fitting.is_empty() {
+            vec![idx]
+        } else {
+            fitting
+        }
+    }
+
     /// Resolve one call site.
     pub(crate) fn resolve(&self, call: &CallSite) -> Resolution {
         let name = call.name.as_str();
@@ -594,6 +620,12 @@ impl Resolver {
             Receiver::Unknown if self.library.contains(name) => Vec::new(),
             Receiver::Unknown => self.all_members.get(name).cloned().unwrap_or_default(),
         };
+
+        // `Type(...)`: the matching initializer when the type declares any
+        let candidates: Vec<usize> = candidates
+            .into_iter()
+            .flat_map(|idx| self.constructor_targets(idx, call))
+            .collect();
 
         let mut best = 0;
         let mut kept: Vec<&str> = Vec::new();
@@ -692,6 +724,7 @@ mod tests {
     fn func(labels: &[&str]) -> Target {
         Target {
             id: "t".into(),
+            name: "f".into(),
             kind: "function".into(),
             file: "A.swift".into(),
             private: false,

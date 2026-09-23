@@ -220,3 +220,17 @@ fn dead_code_keeps_symbols_referenced_by_name_and_reports_unreferenced_ones() {
         );
     }
 }
+
+#[test]
+fn initializers_are_declarations_and_constructor_targets() {
+    let (_d, conn) = indexed();
+    let init = id(&conn, "Session.init(token:)", None);
+    // Calls inside init belong to the initializer, not the file top level.
+    assert_eq!(confident(&conn, &init), vec!["Session.configure()"]);
+    // `Session(token:)` resolves to the matching initializer.
+    let open = id(&conn, "openSession()", None);
+    assert_eq!(confident(&conn, &open), vec!["Session.init(token:)"]);
+    // `self.init(token:)` from a convenience initializer.
+    let convenience = id(&conn, "Session.init()", None);
+    assert_eq!(confident(&conn, &convenience), vec!["Session.init(token:)"]);
+}

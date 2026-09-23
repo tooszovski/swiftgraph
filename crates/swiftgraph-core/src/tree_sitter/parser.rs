@@ -108,7 +108,8 @@ fn visit_node(
                 name: name.clone(),
                 qualified_name: qualified.clone(),
                 kind: symbol_kind,
-                sub_kind: None,
+                sub_kind: (node.kind() == "init_declaration")
+                    .then_some(crate::graph::SymbolSubKind::Initializer),
                 location: Location {
                     file: file_path.to_string(),
                     line: node.start_position().row as u32 + 1,
@@ -308,7 +309,9 @@ impl<'s> CallCollector<'s> {
             | "deinit_declaration"
             | "subscript_declaration" => {
                 let caller = self.caller.clone();
-                if self.caller.is_none() && node.kind() == "function_declaration" {
+                if self.caller.is_none()
+                    && matches!(node.kind(), "function_declaration" | "init_declaration")
+                {
                     self.caller = extract_name(&node, self.source)
                         .map(|name| make_synthetic_id(self.file, &name, node.start_position().row));
                 }
@@ -439,8 +442,12 @@ impl<'s> CallCollector<'s> {
             }
             _ => return,
         };
-        // Skip trivial calls (operators, very short names) and initializers.
-        if name.len() < 2 || name.starts_with('_') || name == "init" {
+        // Skip trivial calls (operators, very short names); `.init(...)`
+        // counts only with a known receiver (`self.init`, `super.init`).
+        if name.len() < 2
+            || name.starts_with('_')
+            || (name == "init" && matches!(receiver, Receiver::Implicit | Receiver::Unknown))
+        {
             return;
         }
 
@@ -736,7 +743,9 @@ fn map_node_kind(node: &Node, source: &str) -> Option<SymbolKind> {
         }
         "protocol_declaration" => Some(SymbolKind::Protocol),
         "enum_declaration" => Some(SymbolKind::Enum),
-        "function_declaration" | "protocol_function_declaration" => Some(SymbolKind::Function),
+        "function_declaration" | "protocol_function_declaration" | "init_declaration" => {
+            Some(SymbolKind::Function)
+        }
         "property_declaration" | "protocol_property_declaration" => Some(SymbolKind::Property),
         "typealias_declaration" => Some(SymbolKind::TypeAlias),
         "extension_declaration" => Some(SymbolKind::Extension),
@@ -748,6 +757,9 @@ fn map_node_kind(node: &Node, source: &str) -> Option<SymbolKind> {
 }
 
 fn extract_name(node: &Node, source: &str) -> Option<String> {
+    if node.kind() == "init_declaration" {
+        return Some("init".to_string());
+    }
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let kind = child.kind();

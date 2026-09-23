@@ -47,6 +47,8 @@ pub struct IndexResult {
     pub total_nodes: usize,
     /// Edges in the database after the run.
     pub total_edges: usize,
+    /// The Index Store was unchanged since the last run and not re-read.
+    pub index_store_reused: bool,
 }
 
 /// Whether the pipeline enriches tree-sitter declarations with swift-syntax.
@@ -90,6 +92,8 @@ impl IndexStrategy {
 
 /// `meta` key holding the [`IndexStrategy`] of the last indexing run.
 pub const META_INDEX_STRATEGY: &str = "index_strategy";
+/// `meta` key with the fingerprint of the Index Store read last.
+pub const META_INDEX_STORE_FINGERPRINT: &str = "index_store_fingerprint";
 /// `meta` key explaining why an Index Store that exists was not used.
 pub const META_INDEX_STORE_NOTE: &str = "index_store_note";
 /// `meta` key identifying the backend data source (`tree-sitter` or
@@ -155,23 +159,35 @@ pub fn index_directory_with_options(
     let source_root = canonical_root.as_path();
     let conn = storage::open_db(db_path)?;
 
-    // Read the Index Store up front so we know which backend this run uses.
-    let store_data = index_store_path.and_then(|store_path| {
-        match IndexStoreLib::load()
-            .map_err(|e| e.to_string())
-            .and_then(|lib| reader::read_index_store(&lib, store_path).map_err(|e| e.to_string()))
-        {
-            Ok(data) => Some((store_path, data)),
-            Err(e) => {
-                warn!("Index Store unavailable, falling back to tree-sitter: {e}");
-                None
-            }
-        }
-    });
+    // An Index Store unchanged since the last run (same units) is not read
+    // or rewritten again: its data is already in the database.
+    let fingerprint = index_store_path.and_then(store_fingerprint);
+    let store_source = index_store_path.map(|p| format!("index-store:{}", p.display()));
+    let reuse_store = !force
+        && fingerprint.is_some()
+        && queries::get_meta(&conn, META_INDEX_STORE_FINGERPRINT)? == fingerprint
+        && queries::get_meta(&conn, META_INDEX_SOURCE)? == store_source;
 
-    let source = match &store_data {
-        Some((p, _)) => format!("index-store:{}", p.display()),
-        None => "tree-sitter".to_string(),
+    // Read the Index Store up front so we know which backend this run uses.
+    let store_data =
+        index_store_path.filter(|_| !reuse_store).and_then(
+            |store_path| match IndexStoreLib::load()
+                .map_err(|e| e.to_string())
+                .and_then(|lib| {
+                    reader::read_index_store(&lib, store_path).map_err(|e| e.to_string())
+                }) {
+                Ok(data) => Some((store_path, data)),
+                Err(e) => {
+                    warn!("Index Store unavailable, falling back to tree-sitter: {e}");
+                    None
+                }
+            },
+        );
+
+    let source = match (&store_data, &store_source) {
+        (Some((p, _)), _) => format!("index-store:{}", p.display()),
+        (None, Some(s)) if reuse_store => s.clone(),
+        _ => "tree-sitter".to_string(),
     };
     let previous_source = queries::get_meta(&conn, META_INDEX_SOURCE)?;
     let force = force
@@ -226,7 +242,17 @@ pub fn index_directory_with_options(
     let store_data =
         store_data.map(|(path, data)| (path, restrict_to_project(data, &scanned_paths)));
 
-    if let Some((_, data)) = &store_data {
+    if reuse_store {
+        let mut stmt = conn.prepare("SELECT path FROM files WHERE hash = 'indexstore'")?;
+        index_store_files = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        used_index_store = !index_store_files.is_empty();
+        debug!(
+            "Index Store unchanged, reusing {} files",
+            index_store_files.len()
+        );
+    } else if let Some((_, data)) = &store_data {
         match write_index_store(&conn, data) {
             Ok((n, e, files)) => {
                 nodes_added = n;
@@ -257,7 +283,17 @@ pub fn index_directory_with_options(
 
     // Files the store covers keep its USR nodes and edges; tree-sitter adds
     // what the store lacks (attributes, access, signature, extent, imports).
-    let stitched = stitch_index_store_nodes(&conn, &covered_files)?;
+    // (already done when the store data was reused)
+    let stitched = if reuse_store {
+        0
+    } else {
+        stitch_index_store_nodes(&conn, &covered_files)?
+    };
+    let covered_files = if reuse_store {
+        Vec::new()
+    } else {
+        covered_files
+    };
     if stitched > 0 {
         info!("tree-sitter details added to {stitched} Index Store nodes");
     }
@@ -393,6 +429,18 @@ pub fn index_directory_with_options(
         "tree-sitter"
     };
     queries::set_meta(&conn, META_INDEX_SOURCE, recorded_source)?;
+    match (&store_data, &fingerprint) {
+        (Some(_), Some(fp)) if used_index_store => {
+            queries::set_meta(&conn, META_INDEX_STORE_FINGERPRINT, fp)?
+        }
+        _ if reuse_store => {}
+        _ => {
+            conn.execute(
+                "DELETE FROM meta WHERE key = ?1",
+                [META_INDEX_STORE_FINGERPRINT],
+            )?;
+        }
+    }
     queries::set_meta(&conn, META_INDEX_STRATEGY, strategy.as_str())?;
 
     debug!(
@@ -411,6 +459,7 @@ pub fn index_directory_with_options(
         // database ignored as duplicates; report what is stored.
         total_nodes: count_rows(&conn, "nodes")?,
         total_edges: count_rows(&conn, "edges")?,
+        index_store_reused: reuse_store,
     })
 }
 
@@ -667,6 +716,30 @@ impl StoredSite {
             },
         }
     }
+}
+
+/// Number and latest modification time of the store's unit files: changes
+/// whenever the build writes new units.
+fn store_fingerprint(store: &Path) -> Option<String> {
+    let mut count = 0u64;
+    let mut latest = 0u128;
+    for version in std::fs::read_dir(store).ok()?.flatten() {
+        let units = version.path().join("units");
+        let Ok(entries) = std::fs::read_dir(&units) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            count += 1;
+            if let Ok(modified) = entry.metadata().and_then(|m| m.modified()) {
+                let nanos = modified
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                latest = latest.max(nanos);
+            }
+        }
+    }
+    (count > 0).then(|| format!("{count}:{latest}"))
 }
 
 /// Counters of [`resolve_calls`].

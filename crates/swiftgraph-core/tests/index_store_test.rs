@@ -352,3 +352,48 @@ fn dead_code_uses_index_store_occurrences() {
     // Members of a dead type are not listed separately
     assert!(!names.contains(&"refresh()"), "{names:?}");
 }
+
+#[test]
+fn unchanged_index_store_is_not_rewritten() {
+    let root = fixture_or_skip!();
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = db_dir.path().join("db.sqlite");
+    let store = swiftgraph_core::project::detect_project(&root)
+        .unwrap()
+        .index_store_path;
+    let run = |force: bool| {
+        pipeline::index_directory_with_options(
+            &db,
+            &root,
+            force,
+            store.as_deref(),
+            &pipeline::SwiftSyntaxMode::Disabled,
+        )
+        .unwrap()
+    };
+    let edges = || {
+        let conn = storage::open_db(&db).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT source, target, kind, line FROM edges ORDER BY 1, 2, 3, 4")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect::<Vec<_>>()
+    };
+    let first = run(true);
+    assert!(!first.index_store_reused);
+    let full = edges();
+    let second = run(false);
+    assert!(second.index_store_reused);
+    assert!(second.strategy.uses_index_store());
+    assert_eq!(edges(), full);
+    assert_eq!(second.total_nodes, first.total_nodes);
+}

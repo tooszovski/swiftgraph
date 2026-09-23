@@ -2,7 +2,7 @@ class Swiftgraph < Formula
   desc "MCP server that builds code graphs from Swift projects"
   homepage "https://github.com/tooszovski/swiftgraph"
   url "https://github.com/tooszovski/swiftgraph/archive/refs/tags/v0.5.1.tar.gz"
-  sha256 "a8e3f5a470bee876674b6f44ffd5fd3c2bd0f94a161269da31a5743a1f5b19ec"
+  sha256 "06afd898b31cc035c10539dae4c25199ac566f242596a33b88643ffd2716a3ce"
   license "MIT"
   head "https://github.com/tooszovski/swiftgraph.git", branch: "main"
 

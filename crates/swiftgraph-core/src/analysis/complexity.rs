@@ -97,8 +97,8 @@ pub fn analyze_complexity_from_conn(
 
     // Sort
     match sort_by {
-        "fan_in" => symbols.sort_by(|a, b| b.fan_in.cmp(&a.fan_in)),
-        "fan_out" => symbols.sort_by(|a, b| b.fan_out.cmp(&a.fan_out)),
+        "fan_in" => symbols.sort_by_key(|s| std::cmp::Reverse(s.fan_in)),
+        "fan_out" => symbols.sort_by_key(|s| std::cmp::Reverse(s.fan_out)),
         _ => symbols.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)

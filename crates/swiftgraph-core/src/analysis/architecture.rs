@@ -327,17 +327,15 @@ pub fn analyze_architecture(
                 });
             }
         }
-        ArchPattern::VIPER => {
-            if presenter_count > 0 && interactor_count == 0 {
-                violations.push(ArchViolation {
-                    rule: "VIPER: Missing Interactors".to_string(),
-                    file: String::new(),
-                    symbol: String::new(),
-                    description: format!(
-                        "{presenter_count} presenters but no interactors. Business logic should be in Interactors."
-                    ),
-                });
-            }
+        ArchPattern::VIPER if presenter_count > 0 && interactor_count == 0 => {
+            violations.push(ArchViolation {
+                rule: "VIPER: Missing Interactors".to_string(),
+                file: String::new(),
+                symbol: String::new(),
+                description: format!(
+                    "{presenter_count} presenters but no interactors. Business logic should be in Interactors."
+                ),
+            });
         }
         _ => {}
     }

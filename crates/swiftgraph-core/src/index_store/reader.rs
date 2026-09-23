@@ -241,19 +241,46 @@ fn map_symbol_kind(raw: u32) -> GSymbolKind {
 }
 
 /// Map IndexStore symbol properties bitfield to AccessLevel.
+///
+/// Swift access control is a multi-bit field (bits 17-19), not independent
+/// flags: e.g. PUBLIC = FILEPRIVATE | PACKAGE bits. Compare the whole field.
+/// Stores written without access control info yield `Internal`.
 fn map_access_level(properties: u64) -> AccessLevel {
-    // Check from most to least restrictive
-    if properties & symbol_property::SWIFT_AC_PUBLIC != 0 {
-        AccessLevel::Public
-    } else if properties & symbol_property::SWIFT_AC_PACKAGE != 0 {
-        AccessLevel::Package
-    } else if properties & symbol_property::SWIFT_AC_INTERNAL != 0 {
-        AccessLevel::Internal
-    } else if properties & symbol_property::SWIFT_AC_FILEPRIVATE != 0 {
-        AccessLevel::FilePrivate
-    } else if properties & symbol_property::SWIFT_AC_LESS_THAN_FILEPRIVATE != 0 {
-        AccessLevel::Private
-    } else {
-        AccessLevel::Internal // default
+    use symbol_property::*;
+    const MASK: u64 = SWIFT_AC_LESS_THAN_FILEPRIVATE | SWIFT_AC_FILEPRIVATE | SWIFT_AC_PACKAGE;
+    match properties & MASK {
+        SWIFT_AC_PUBLIC => AccessLevel::Public,
+        SWIFT_AC_PACKAGE => AccessLevel::Package,
+        SWIFT_AC_INTERNAL => AccessLevel::Internal,
+        SWIFT_AC_FILEPRIVATE => AccessLevel::FilePrivate,
+        SWIFT_AC_LESS_THAN_FILEPRIVATE => AccessLevel::Private,
+        _ => AccessLevel::Internal,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_control_is_an_exact_field_not_overlapping_bits() {
+        use symbol_property::*;
+        let async_flag = SWIFT_ASYNC;
+        assert_eq!(map_access_level(SWIFT_AC_PUBLIC), AccessLevel::Public);
+        assert_eq!(map_access_level(SWIFT_AC_PACKAGE), AccessLevel::Package);
+        assert_eq!(map_access_level(SWIFT_AC_INTERNAL), AccessLevel::Internal);
+        assert_eq!(
+            map_access_level(SWIFT_AC_FILEPRIVATE),
+            AccessLevel::FilePrivate
+        );
+        assert_eq!(
+            map_access_level(SWIFT_AC_LESS_THAN_FILEPRIVATE),
+            AccessLevel::Private
+        );
+        assert_eq!(
+            map_access_level(SWIFT_AC_FILEPRIVATE | async_flag),
+            AccessLevel::FilePrivate
+        );
+        assert_eq!(map_access_level(0), AccessLevel::Internal);
     }
 }

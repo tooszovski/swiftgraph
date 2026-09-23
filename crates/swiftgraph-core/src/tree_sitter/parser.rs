@@ -54,12 +54,13 @@ impl TreeSitterParser {
 
         let file_path = path.to_string_lossy().to_string();
         let root = tree.root_node();
-        visit_node(root, source, &file_path, None, &mut result);
+        let mut id_counts = std::collections::HashMap::new();
+        visit_node(root, source, &file_path, None, &mut result, &mut id_counts);
 
         // Second pass: call sites with what this file tells about their
         // receivers, and names referenced outside of calls.
         (result.calls, result.references, result.member_types) =
-            CallCollector::new(source, &file_path, root).collect(root);
+            CallCollector::new(source, &file_path, root, &result.nodes).collect(root);
 
         Ok(result)
     }
@@ -81,6 +82,7 @@ fn visit_node(
     file_path: &str,
     container: Option<Container>,
     result: &mut ParseResult,
+    id_counts: &mut std::collections::HashMap<String, u32>,
 ) {
     // Local variables (inside a function, accessor or closure) are not
     // declarations of the program's structure: no node, no FTS row.
@@ -88,7 +90,6 @@ fn visit_node(
         node.kind() == "property_declaration" && container.is_some_and(|c| c.type_path.is_none());
     if let Some(symbol_kind) = map_node_kind(&node, source).filter(|_| !local_variable) {
         if let Some(name) = extract_name(&node, source) {
-            let id = make_synthetic_id(file_path, &name, node.start_position().row);
             let is_type = matches!(
                 symbol_kind,
                 SymbolKind::Class
@@ -105,6 +106,7 @@ fn visit_node(
             if symbol_kind == SymbolKind::Function {
                 qualified.push_str(&parameter_labels(&node, source));
             }
+            let id = stable_id(file_path, symbol_kind, &qualified, id_counts);
 
             let graph_node = GraphNode {
                 id: id.clone(),
@@ -171,7 +173,7 @@ fn visit_node(
             };
             for i in 0..node.child_count() {
                 if let Some(c) = node.child(i) {
-                    visit_node(c, source, file_path, Some(child), result);
+                    visit_node(c, source, file_path, Some(child), result, id_counts);
                 }
             }
             return;
@@ -181,7 +183,7 @@ fn visit_node(
     // Recurse into children
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
-            visit_node(child, source, file_path, container, result);
+            visit_node(child, source, file_path, container, result, id_counts);
         }
     }
 }
@@ -278,13 +280,20 @@ struct CallCollector<'s> {
     references: std::collections::BTreeSet<String>,
     /// Callee identifiers already recorded as call sites.
     callee_ids: std::collections::HashSet<usize>,
+    /// Declaration IDs by (name, 1-based line), from the first pass.
+    decl_ids: std::collections::HashMap<(String, u32), String>,
 }
 
 impl<'s> CallCollector<'s> {
-    fn new(source: &'s str, file: &'s str, root: Node) -> Self {
+    fn new(source: &'s str, file: &'s str, root: Node, nodes: &[GraphNode]) -> Self {
         let mut members = std::collections::HashMap::new();
         collect_members(root, source, &mut members);
+        let decl_ids = nodes
+            .iter()
+            .map(|n| ((n.name.clone(), n.location.line), n.id.clone()))
+            .collect();
         Self {
+            decl_ids,
             source,
             file,
             members,
@@ -295,6 +304,13 @@ impl<'s> CallCollector<'s> {
             references: std::collections::BTreeSet::new(),
             callee_ids: std::collections::HashSet::new(),
         }
+    }
+
+    /// ID the first pass gave the declaration `node` named `name`.
+    fn declaration_id(&self, name: &str, node: &Node) -> Option<String> {
+        self.decl_ids
+            .get(&(name.to_string(), node.start_position().row as u32 + 1))
+            .cloned()
     }
 
     fn collect(mut self, root: Node) -> (Vec<CallSite>, Vec<String>, Vec<MemberType>) {
@@ -357,7 +373,7 @@ impl<'s> CallCollector<'s> {
                     && matches!(node.kind(), "function_declaration" | "init_declaration")
                 {
                     self.caller = extract_name(&node, self.source)
-                        .map(|name| make_synthetic_id(self.file, &name, node.start_position().row));
+                        .and_then(|name| self.declaration_id(&name, &node));
                 }
                 self.locals.push(parameter_frame(&node, self.source));
                 self.walk_children(node);
@@ -368,7 +384,7 @@ impl<'s> CallCollector<'s> {
                 // A property of a type or a global: calls in its initializer
                 // or accessors belong to it.
                 self.caller = extract_name(&node, self.source)
-                    .map(|name| make_synthetic_id(self.file, &name, node.start_position().row));
+                    .and_then(|name| self.declaration_id(&name, &node));
                 self.walk_children(node);
                 self.caller = None;
             }
@@ -1031,8 +1047,29 @@ fn find_type_name(node: &Node, source: &str) -> Option<String> {
     None
 }
 
-fn make_synthetic_id(file: &str, name: &str, line: usize) -> String {
-    format!("ts::{file}::{name}::{line}")
+/// Node ID from the file, kind and qualified name, independent of line
+/// numbers so edits above a declaration keep edges into it valid. Repeated
+/// names in one file (overloads with the same labels, several extensions)
+/// get `#2`, `#3`... in order of appearance.
+fn stable_id(
+    file: &str,
+    kind: SymbolKind,
+    qualified: &str,
+    counts: &mut std::collections::HashMap<String, u32>,
+) -> String {
+    let base = format!("ts::{file}::{}:{qualified}", kind.as_str());
+    let n = counts.entry(base.clone()).or_insert(0);
+    *n += 1;
+    if *n == 1 {
+        base
+    } else {
+        format!("{base}#{n}")
+    }
+}
+
+/// Node ID of an import declaration.
+pub fn import_id(file: &str, module: &str) -> String {
+    format!("ts::{file}::import:{module}")
 }
 
 #[cfg(test)]
@@ -1110,6 +1147,31 @@ mod tests {
             .iter()
             .any(|a| a == "@Published"));
         assert_eq!(find(&r, "name").kind, SymbolKind::Property);
+    }
+
+    #[test]
+    fn node_ids_do_not_depend_on_line_numbers() {
+        let a = parse("struct S {\n    func run() {}\n    func f(_ x: Int) {}\n    func f(_ x: String) {}\n}\n");
+        let b = parse("// header\n\nstruct S {\n    func run() {}\n    func f(_ x: Int) {}\n    func f(_ x: String) {}\n}\n");
+        let ids = |r: &ParseResult| {
+            let mut v: Vec<String> = r.nodes.iter().map(|n| n.id.clone()).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(ids(&a), ids(&b));
+        // Same qualified name twice: still distinct IDs
+        let overloads: Vec<&str> = a
+            .nodes
+            .iter()
+            .filter(|n| n.name == "f")
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(overloads.len(), 2);
+        assert_ne!(overloads[0], overloads[1]);
+        // Calls are attributed to the same IDs
+        let r = parse("struct S {\n    func run() { go() }\n}\n");
+        let run = find(&r, "run");
+        assert_eq!(r.calls[0].caller, run.id);
     }
 
     #[test]

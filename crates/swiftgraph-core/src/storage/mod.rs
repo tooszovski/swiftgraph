@@ -22,8 +22,9 @@ pub enum StorageError {
 /// History: 1 = v0.5.x (implicit rowid, nullable edge line); 2 = explicit
 /// `rid` rowid alias, `edges.line NOT NULL DEFAULT 0`, `meta` table;
 /// 3 = `edges.ambiguous`, `name_refs` table (receiver-aware call
-/// resolution); 4 = `member_types`, initializer nodes, no local variables.
-pub const SCHEMA_VERSION: i32 = 4;
+/// resolution); 4 = `member_types`, initializer nodes, no local variables;
+/// 5 = tree-sitter node IDs without line numbers.
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// Open or create the SwiftGraph SQLite database.
 pub fn open_db(path: &Path) -> Result<Connection, StorageError> {

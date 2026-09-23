@@ -853,7 +853,7 @@ fn enrich_with_swift_syntax(
                     None => {
                         let line = import.line.max(1);
                         let node = crate::graph::GraphNode {
-                            id: format!("ts::{file}::{}::{}", import.name, line - 1),
+                            id: crate::tree_sitter::parser::import_id(&file, &import.name),
                             name: import.name.clone(),
                             qualified_name: import.name.clone(),
                             kind: crate::graph::SymbolKind::Import,

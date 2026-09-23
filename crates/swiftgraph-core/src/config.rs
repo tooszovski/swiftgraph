@@ -20,6 +20,10 @@ pub struct Config {
     /// Index Store path ("auto" or explicit path).
     #[serde(default = "default_index_store")]
     pub index_store_path: String,
+    /// Directory (relative to the project root) holding the Xcode project or
+    /// `Package.swift`, e.g. `"ios"`. When unset it is auto-detected.
+    #[serde(default)]
+    pub project_dir: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -42,6 +46,7 @@ impl Default for Config {
                 "**/DerivedData/**".into(),
             ],
             index_store_path: "auto".into(),
+            project_dir: None,
         }
     }
 }

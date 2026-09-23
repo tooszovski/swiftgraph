@@ -318,6 +318,8 @@ swiftgraph audit --format sarif > out.sarif  # SARIF (GitHub Code Scanning, Sona
 }
 ```
 
+If the Xcode project or `Package.swift` is not in the root (for example, it lives in `./ios`), SwiftGraph finds it up to three levels deep, skipping `.build`, `Pods`, `DerivedData` and `node_modules`. To pin it explicitly, add `"project_dir": "ios"`.
+
 ### Index Store
 
 SwiftGraph works in two modes:

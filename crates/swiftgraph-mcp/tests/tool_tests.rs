@@ -346,3 +346,26 @@ fn get_boundaries_invalid_json_returns_error() {
     let result = navigation::get_boundaries(&db_path, "not json");
     assert!(result.is_err());
 }
+
+#[test]
+fn status_without_project_markers_reports_unknown() {
+    use swiftgraph_mcp::tools::status;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("Sources")).unwrap();
+    std::fs::write(dir.path().join("Sources/A.swift"), "struct A {}").unwrap();
+
+    let resp = status::get_status(dir.path()).expect("status must not fail without markers");
+    assert_eq!(resp.project_type, "unknown");
+    assert_eq!(resp.files, 0);
+}
+
+#[test]
+fn status_finds_project_in_subdirectory() {
+    use swiftgraph_mcp::tools::status;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("ios/Shop.xcodeproj")).unwrap();
+
+    let resp = status::get_status(dir.path()).unwrap();
+    assert_eq!(resp.project_type, "xcode");
+    assert_eq!(resp.project_name, "Shop");
+}

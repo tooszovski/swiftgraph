@@ -18,11 +18,29 @@ pub struct StatusResponse {
     pub db_path: String,
 }
 
+/// Build the status report. Never fails just because no project markers were
+/// found: in that case `project_type` is `"unknown"` and DB statistics are still reported.
 pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
-    let project_info = project::detect_project(project_root)?;
+    let (project_name, project_type, index_store_path) = match project::detect_project(project_root)
+    {
+        Ok(info) => (
+            info.name,
+            info.project_type.as_str().to_string(),
+            info.index_store_path,
+        ),
+        Err(project::ProjectError::NotFound(_)) => (
+            project_root
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "Unknown".into()),
+            "unknown".to_string(),
+            None,
+        ),
+        Err(e) => return Err(e.into()),
+    };
 
     let db_path = project_root.join(".swiftgraph/db.sqlite");
-    let mode = if project_info.index_store_path.is_some() {
+    let mode = if index_store_path.is_some() {
         "full"
     } else {
         "tree-sitter"
@@ -37,13 +55,13 @@ pub fn get_status(project_root: &Path) -> Result<StatusResponse> {
     };
 
     Ok(StatusResponse {
-        project_name: project_info.name,
-        project_type: project_info.project_type.as_str().to_string(),
+        project_name,
+        project_type,
         mode: mode.to_string(),
         files,
         nodes,
         edges,
-        index_store_available: project_info.index_store_path.is_some(),
+        index_store_available: index_store_path.is_some(),
         db_path: db_path.to_string_lossy().to_string(),
     })
 }

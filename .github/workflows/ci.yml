@@ -31,15 +31,17 @@ jobs:
             ~/.cargo/git/db/
             target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Check
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --locked -- -D warnings
 
       - name: Format
         run: cargo fmt --all -- --check
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --locked

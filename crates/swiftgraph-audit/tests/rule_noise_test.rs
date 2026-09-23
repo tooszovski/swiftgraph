@@ -350,6 +350,6 @@ fn runner_respects_config_include_and_exclude() {
 #[test]
 fn conc001_points_at_the_class_line_not_its_attributes() {
     let rule = rules::concurrency::MissingMainActor;
-    let source = "@usableFromInline\nfinal class VM: ObservableObject {}\n\n@available(iOS, deprecated: 100000, message: \"x\")\n// note\nclass Screen: UIViewController {}\n";
+    let source = "@usableFromInline\nfinal class VM: ObservableObject {}\n\n@available(iOS, deprecated: 100000, message: \"x\")\n// note\nclass Screen: NSObject, ObservableObject {}\n";
     assert_eq!(lines(&check(&rule, source)), vec![2, 6]);
 }

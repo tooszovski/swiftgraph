@@ -53,7 +53,33 @@ impl AuditRule for ManualJsonBuilding {
 }
 
 /// COD-002: `try?` swallowing Codable decoding errors.
+///
+/// Not reported when the failure is handled: probing alternative types in
+/// an `if let ... else` chain, or a `guard ... else` that throws or returns
+/// `nil`.
 pub struct TryOptionalDecoding;
+
+/// Whether the statement around a `try?` handles the failure explicitly.
+fn handles_failure(expr: tree_sitter::Node, source: &str) -> bool {
+    let mut current = expr.parent();
+    while let Some(n) = current {
+        match n.kind() {
+            "if_statement" => {
+                return (0..n.child_count())
+                    .filter_map(|i| n.child(i))
+                    .any(|c| c.kind() == "else");
+            }
+            "guard_statement" => {
+                let text = node_text(n, source);
+                let otherwise = text.split_once("else").map_or("", |(_, e)| e);
+                return otherwise.contains("throw") || otherwise.contains("return nil");
+            }
+            "statements" | "function_body" | "lambda_literal" => return false,
+            _ => current = n.parent(),
+        }
+    }
+    false
+}
 
 impl AuditRule for TryOptionalDecoding {
     fn id(&self) -> &str {
@@ -77,11 +103,27 @@ impl AuditRule for TryOptionalDecoding {
             if node.kind() != "try_expression" {
                 return false;
             }
-            let text = node_text(node, src);
-            text.starts_with("try?") && (text.contains(".decode(") || text.contains("JSONDecoder"))
+            if !node_text(node, src).starts_with("try?") {
+                return false;
+            }
+            // `try?` binds to the receiver (`try? JSONDecoder()`); look at the
+            // whole member chain. A Codable decode takes a metatype:
+            // `decode(T.self, ...)`.
+            let mut top = node;
+            while let Some(p) = top
+                .parent()
+                .filter(|p| matches!(p.kind(), "navigation_expression" | "call_expression"))
+            {
+                top = p;
+            }
+            let text = node_text(top, src);
+            text.contains(".decode(") && text.contains(".self")
         });
 
         for expr in try_exprs {
+            if handles_failure(expr, ctx.source) {
+                continue;
+            }
             issues.push(AuditIssue {
                 id: format!("{}:{}", self.id(), ctx.file_path),
                 category: self.category(),

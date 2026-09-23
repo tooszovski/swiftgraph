@@ -6,15 +6,31 @@ use crate::rules::{
 };
 use tree_sitter::Node;
 
-/// CONC-001: Missing @MainActor on UIViewController subclass or ObservableObject.
+/// CONC-001: Missing @MainActor on an ObservableObject.
 ///
-/// High when the class has asynchronous code (async/await, `Task`,
-/// `DispatchQueue`, `receive(on:)`), where state can be touched off the main
-/// thread; advisory otherwise — a convention question rather than a race. Projects
+/// UIKit classes (`UIViewController`, `UIView`) are main-actor isolated by
+/// the SDK, so subclasses are not reported. High when the class or its
+/// extensions in the file have asynchronous code (async/await, `Task`,
+/// `DispatchQueue`, `receive(on:)`) and no explicit hop to the main actor;
+/// advisory when there is no asynchronous code or the class hops explicitly
+/// (`@MainActor` members, `MainActor.run`, `receive(on: DispatchQueue.main)`,
+/// helpers named `...OnMain`) — a convention question rather than a race. Projects
 /// that hop to the main actor explicitly can disable the rule or change its
 /// severity in `.swiftgraph/config.json` (`audit.disabled_rules`,
 /// `audit.severity`).
 pub struct MissingMainActor;
+
+/// Markers of an explicit hop to the main actor or main queue.
+const MAIN_HOP_MARKERS: &[&str] = &[
+    "@MainActor",
+    "MainActor.run",
+    "DispatchQueue.main",
+    "RunLoop.main",
+    "OnMain(",
+    "onMain(",
+    "OnMain {",
+    "onMain {",
+];
 
 /// Markers of code that may run off the main thread.
 const ASYNC_MARKERS: &[&str] = &[
@@ -52,16 +68,14 @@ impl AuditRule for MissingMainActor {
             node.kind() == "class_declaration"
         });
 
-        for decl in class_decls {
+        for decl in class_decls.iter().copied() {
             let keyword = class_keyword(decl, ctx.source);
             if keyword != "class" {
                 continue;
             }
 
-            // Check if it inherits from UIViewController or conforms to ObservableObject
-            let inherits_ui =
-                inherits_from(decl, ctx.source, &["UIViewController", "ObservableObject"]);
-            if !inherits_ui {
+            // UIKit classes are already @MainActor; ObservableObject is not
+            if !inherits_from(decl, ctx.source, &["ObservableObject"]) {
                 continue;
             }
 
@@ -71,21 +85,33 @@ impl AuditRule for MissingMainActor {
             }
 
             let name = decl_name(decl, ctx.source).unwrap_or_default();
-            let text = node_text(decl, ctx.source);
+            // The class and its extensions in this file
+            let mut text = node_text(decl, ctx.source).to_string();
+            for ext in &class_decls {
+                if class_keyword(*ext, ctx.source) == "extension"
+                    && crate::rules::decl_type_name(*ext, ctx.source).as_deref() == Some(&name)
+                {
+                    text.push_str(node_text(*ext, ctx.source));
+                }
+            }
             let has_async = ASYNC_MARKERS.iter().any(|m| text.contains(m));
-            let (severity, note) = if has_async {
-                (self.severity(), "")
-            } else {
+            let hops = MAIN_HOP_MARKERS.iter().any(|m| text.contains(m));
+            let (severity, note) = if !has_async {
                 (Severity::Advisory, " (no asynchronous code in the class)")
+            } else if hops {
+                (
+                    Severity::Advisory,
+                    " (the class hops to the main actor explicitly)",
+                )
+            } else {
+                (self.severity(), "")
             };
             issues.push(AuditIssue {
                 id: format!("{}:{}", self.id(), ctx.file_path),
                 category: self.category(),
                 severity,
                 rule: self.id().to_string(),
-                message: format!(
-                    "`{name}` inherits UIViewController or ObservableObject but is missing @MainActor{note}"
-                ),
+                message: format!("`{name}` is an ObservableObject without @MainActor{note}"),
                 file: ctx.file_path.to_string(),
                 line: crate::rules::declaration_line(decl, ctx.source),
                 column: None,
@@ -291,7 +317,97 @@ fn inherits_from(node: Node, source: &str, types: &[&str]) -> bool {
 }
 
 /// CONC-005: Non-Sendable type used across concurrency boundary.
+///
+/// A non-isolated class whose stored `var` is referenced inside an
+/// unstructured `Task { }` / `Task.detached { }` in the class or its
+/// extensions. Tasks marked `@MainActor in`, task-group children and tasks
+/// of other types in the file are not counted; classes nested in actors are
+/// confined by the actor.
 pub struct SendableViolation;
+
+/// Names of stored `var` properties declared directly in a class body
+/// (not computed, lazy or weak).
+fn stored_vars<'a>(decl: Node<'a>, source: &'a str) -> Vec<&'a str> {
+    let Some(body) = decl.child_by_field_name("body") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..body.named_child_count() {
+        let Some(prop) = body.named_child(i) else {
+            continue;
+        };
+        if prop.kind() != "property_declaration" {
+            continue;
+        }
+        let text = node_text(prop, source);
+        let mut cursor = prop.walk();
+        let children: Vec<Node> = prop.children(&mut cursor).collect();
+        let is_var = children.iter().any(|c| {
+            c.kind() == "value_binding_pattern" && node_text(*c, source).starts_with("var")
+        });
+        let computed = children.iter().any(|c| c.kind() == "computed_property");
+        if !is_var || computed || text.contains("lazy ") || text.contains("weak ") {
+            continue;
+        }
+        if let Some(name) = children
+            .iter()
+            .find(|c| c.kind() == "pattern")
+            .map(|p| node_text(*p, source))
+        {
+            out.push(name);
+        }
+    }
+    out
+}
+
+/// Bodies of `Task { }` / `Task.detached { }` calls under `scope`, excluding
+/// closures that start with `@MainActor`.
+fn unstructured_tasks<'a>(scope: Node<'a>, source: &'a str) -> Vec<&'a str> {
+    find_descendants(scope, source, &|n, src| {
+        if n.kind() != "call_expression" {
+            return false;
+        }
+        let Some(callee) = n.named_child(0) else {
+            return false;
+        };
+        matches!(node_text(callee, src), "Task" | "Task.detached")
+    })
+    .into_iter()
+    .filter_map(|call| {
+        let body = find_descendants(call, source, &|n, _| n.kind() == "lambda_literal")
+            .into_iter()
+            .next()?;
+        let text = node_text(body, source);
+        (!text
+            .trim_start_matches('{')
+            .trim_start()
+            .starts_with("@MainActor"))
+        .then_some(text)
+    })
+    .collect()
+}
+
+/// Whether `word` occurs in `text` as a whole identifier.
+fn contains_word(text: &str, word: &str) -> bool {
+    text.match_indices(word).any(|(i, _)| {
+        let before = text[..i].chars().next_back();
+        let after = text[i + word.len()..].chars().next();
+        let ident = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        !ident(before) && !ident(after)
+    })
+}
+
+/// Whether the declaration is nested inside an `actor`.
+fn nested_in_actor(decl: Node, source: &str) -> bool {
+    let mut current = decl.parent();
+    while let Some(n) = current {
+        if n.kind() == "class_declaration" && class_keyword(n, source) == "actor" {
+            return true;
+        }
+        current = n.parent();
+    }
+    false
+}
 
 impl AuditRule for SendableViolation {
     fn id(&self) -> &str {
@@ -311,63 +427,61 @@ impl AuditRule for SendableViolation {
         let root = ctx.tree.root_node();
         let mut issues = Vec::new();
 
-        // Find class declarations (non-final, non-actor) with mutable stored properties
-        // that don't conform to Sendable or @unchecked Sendable
         let class_decls = find_descendants(root, ctx.source, &|node, _| {
             node.kind() == "class_declaration"
         });
 
-        for decl in class_decls {
-            let keyword = class_keyword(decl, ctx.source);
-            if keyword != "class" {
+        for decl in class_decls.iter().copied() {
+            if class_keyword(decl, ctx.source) != "class"
+                || has_attribute(decl, ctx.source, "MainActor")
+                || crate::rules::inheritance_names(decl, ctx.source)
+                    .iter()
+                    .any(|n| n == "Sendable")
+                || node_text(decl, ctx.source).contains("@unchecked")
+                || nested_in_actor(decl, ctx.source)
+            {
                 continue;
             }
-
             let name = decl_name(decl, ctx.source).unwrap_or_default();
-            let decl_text = node_text(decl, ctx.source);
 
-            // Skip if already Sendable
-            if decl_text.contains("Sendable") || decl_text.contains("@unchecked") {
+            // Stored mutable properties declared in the class body
+            let stored = stored_vars(decl, ctx.source);
+            if stored.is_empty() {
                 continue;
             }
 
-            // Check if this class has mutable state (var properties)
-            let has_var = find_descendants(decl, ctx.source, &|node, src| {
-                node.kind() == "property_declaration" && node_text(node, src).starts_with("var ")
+            // Unstructured tasks in the class and its extensions in this file
+            let mut scopes = vec![decl];
+            scopes.extend(class_decls.iter().copied().filter(|ext| {
+                class_keyword(*ext, ctx.source) == "extension"
+                    && crate::rules::decl_type_name(*ext, ctx.source).as_deref() == Some(&name)
+            }));
+            let touches_state = scopes.iter().any(|scope| {
+                unstructured_tasks(*scope, ctx.source)
+                    .into_iter()
+                    .any(|body| stored.iter().any(|var| contains_word(body, var)))
             });
-
-            if has_var.is_empty() {
+            if !touches_state {
                 continue;
             }
 
-            // Check if the class is used in Task/async context within this file
-            let file_text = ctx.source;
-            let name_in_task = file_text.contains("Task {") || file_text.contains("Task.detached");
-
-            if !name_in_task {
-                continue;
-            }
-
-            // Heuristic: non-Sendable class with mutable state used alongside Task
-            if !has_attribute(decl, ctx.source, "MainActor") {
-                issues.push(AuditIssue {
-                    id: format!("{}:{}", self.id(), ctx.file_path),
-                    category: self.category(),
-                    severity: self.severity(),
-                    rule: self.id().to_string(),
-                    message: format!(
-                        "`{name}` has mutable state but doesn't conform to Sendable — potential data race"
-                    ),
-                    file: ctx.file_path.to_string(),
-                    line: decl.start_position().row as u32 + 1,
-                    column: None,
-                    symbol: Some(name),
-                    fix: Some(
-                        "Make the class final + Sendable, use @MainActor, or convert to an actor"
-                            .into(),
-                    ),
-                });
-            }
+            issues.push(AuditIssue {
+                id: format!("{}:{}", self.id(), ctx.file_path),
+                category: self.category(),
+                severity: self.severity(),
+                rule: self.id().to_string(),
+                message: format!(
+                    "`{name}` mutable state is used from an unstructured Task off the main actor — potential data race"
+                ),
+                file: ctx.file_path.to_string(),
+                line: crate::rules::declaration_line(decl, ctx.source),
+                column: None,
+                symbol: Some(name),
+                fix: Some(
+                    "Make the class final + Sendable, use @MainActor, or convert to an actor"
+                        .into(),
+                ),
+            });
         }
 
         issues

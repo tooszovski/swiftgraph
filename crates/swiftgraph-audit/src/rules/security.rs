@@ -129,23 +129,6 @@ impl AuditRule for InsecureStorage {
     fn check(&self, ctx: &FileContext) -> Vec<AuditIssue> {
         let mut issues = Vec::new();
 
-        let sensitive_patterns = [
-            "token",
-            "password",
-            "secret",
-            "credential",
-            "apiKey",
-            "api_key",
-            "accessToken",
-            "access_token",
-            "refreshToken",
-            "refresh_token",
-            "authToken",
-            "auth_token",
-            "sessionToken",
-            "session_token",
-        ];
-
         for (i, line) in ctx.source.lines().enumerate() {
             let trimmed = line.trim();
             if trimmed.starts_with("//") {
@@ -154,9 +137,9 @@ impl AuditRule for InsecureStorage {
 
             // Check for UserDefaults storing sensitive data
             if line.contains("UserDefaults") || line.contains("@AppStorage") {
-                for pattern in &sensitive_patterns {
-                    if line.to_lowercase().contains(&pattern.to_lowercase()) {
-                        issues.push(AuditIssue {
+                // Word-level match: `tokenSymbolKey` (an asset) is not a secret
+                if let Some(pattern) = credential_in(line) {
+                    issues.push(AuditIssue {
                             id: format!("{}:{}", self.id(), ctx.file_path),
                             category: self.category(),
                             severity: self.severity(),
@@ -170,8 +153,6 @@ impl AuditRule for InsecureStorage {
                             symbol: None,
                             fix: Some("Use Keychain Services for sensitive data storage".into()),
                         });
-                        break;
-                    }
                 }
             }
         }
@@ -324,7 +305,12 @@ fn logged_code(line: &str) -> String {
 
 /// The credential term written by the log call on `line`, if any.
 fn sensitive_term(line: &str) -> Option<String> {
-    let code = logged_code(line);
+    credential_in(&logged_code(line))
+}
+
+/// The first credential term among identifiers and words of `code`:
+/// `accessToken`, `access_token`, `password`...; a bare `token` is not one.
+fn credential_in(code: &str) -> Option<String> {
     for ident in code
         .split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|w| !w.is_empty())
@@ -424,10 +410,14 @@ impl AuditRule for AtsBypass {
                 continue;
             }
 
-            if line.contains("http://")
-                && !line.contains("http://localhost")
-                && !line.contains("http://127.0.0.1")
-            {
+            // A URL with a host, not a bare scheme (`["http://", "https://"]`)
+            let has_url = line.match_indices("http://").any(|(i, _)| {
+                line[i + 7..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric())
+            });
+            if has_url && !line.contains("http://localhost") && !line.contains("http://127.0.0.1") {
                 issues.push(AuditIssue {
                     id: format!("{}:{}", self.id(), ctx.file_path),
                     category: self.category(),

@@ -5,10 +5,11 @@ use crate::rules::{find_descendants, node_text, AuditRule, FileContext};
 
 /// MEM-001: Closure capturing self without [weak self] in escaping context.
 ///
-/// A closure is considered escaping when it is stored (assigned to a
-/// property or variable), passed as a completion-like argument
-/// (`completion:`, `handler:`, `onX:` ...), or is a trailing closure of a
-/// completion-like call or of a Combine pipeline. Closures of
+/// High when `self` stores the closure: assigned to a property or variable,
+/// or part of a Combine subscription kept with `.store(in:)` or assigned.
+/// Low when it is only passed as a completion-like callback (`completion:`,
+/// `handler:`, `onX:` ...), which is released when the work completes.
+/// Pipelines returned to the caller, `self` only in the capture list, closures of
 /// non-escaping standard library calls (`map`, `filter`, `forEach`,
 /// `first(where:)` ...) and closures inside structs and enums, where `self`
 /// is a value, are ignored.
@@ -56,14 +57,7 @@ const NON_ESCAPING_CALLS: &[&str] = &[
 
 /// Combine operators: a closure anywhere in such a chain lives as long as
 /// the subscription.
-const COMBINE_MARKERS: &[&str] = &[
-    ".sink",
-    ".store(in:",
-    ".assign(to:",
-    ".eraseToAnyPublisher",
-    ".receive(on:",
-    ".handleEvents",
-];
+const COMBINE_MARKERS: &[&str] = &[".sink", ".store(in:", ".assign(to:", ".eraseToAnyPublisher"];
 
 /// Parameter labels and call names that usually take stored callbacks.
 const ESCAPING_WORDS: &[&str] = &[
@@ -99,19 +93,27 @@ fn chain_root(call: tree_sitter::Node) -> tree_sitter::Node {
     root
 }
 
-/// Whether the closure outlives the call it is passed to.
-fn is_escaping(closure: tree_sitter::Node, source: &str) -> bool {
-    let Some(parent) = closure.parent() else {
-        return false;
-    };
+/// How a closure outlives the call it is passed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Escape {
+    /// Stored by `self`: assigned to a property, or a Combine subscription
+    /// kept in `self`'s storage.
+    Stored,
+    /// Passed as a completion-like callback; retained while the work runs.
+    Callback,
+}
+
+fn escape_kind(closure: tree_sitter::Node, source: &str) -> Option<Escape> {
+    let parent = closure.parent()?;
     let call = match parent.kind() {
         // `handler = { ... }`, `self.onTap = { ... }`
-        "assignment" => return true,
+        "assignment" => return Some(Escape::Stored),
         // `var onTap = { ... }` in a type body
         "property_declaration" => {
             return parent
                 .parent()
-                .is_some_and(|p| matches!(p.kind(), "class_body" | "enum_class_body"));
+                .is_some_and(|p| matches!(p.kind(), "class_body" | "enum_class_body"))
+                .then_some(Escape::Stored);
         }
         // `f(completion: { ... })`
         "value_argument" => {
@@ -120,7 +122,7 @@ fn is_escaping(closure: tree_sitter::Node, source: &str) -> bool {
                 .find(|c| c.kind() == "value_argument_label")
             {
                 if escaping_word(node_text(label, source)) {
-                    return true;
+                    return Some(Escape::Callback);
                 }
             }
             parent.parent().and_then(|args| args.parent())
@@ -129,22 +131,43 @@ fn is_escaping(closure: tree_sitter::Node, source: &str) -> bool {
         "call_suffix" => Some(parent),
         _ => None,
     };
-    let Some(call) = call.and_then(|suffix| suffix.parent()) else {
-        return false;
-    };
+    let call = call.and_then(|suffix| suffix.parent())?;
     if call.kind() != "call_expression" {
-        return false;
+        return None;
     }
     let name = crate::rules::callee_name(call, source).unwrap_or_default();
-    let chain = node_text(chain_root(call), source);
+    let root = chain_root(call);
+    let chain = node_text(root, source);
     if COMBINE_MARKERS.iter().any(|m| chain.contains(m)) {
-        return true;
+        // Only a subscription kept by `self` closes the cycle; a pipeline
+        // returned to the caller is owned there.
+        let kept = chain.contains(".store(in:")
+            || root
+                .parent()
+                .is_some_and(|p| matches!(p.kind(), "assignment" | "property_declaration"));
+        return kept.then_some(Escape::Stored);
     }
     if NON_ESCAPING_CALLS.contains(&name) {
-        return false;
+        return None;
     }
     // Trailing closure of a completion-like call
-    parent.kind() == "call_suffix" && escaping_word(name)
+    (parent.kind() == "call_suffix" && escaping_word(name)).then_some(Escape::Callback)
+}
+
+/// Whether `self` is used in the closure outside its capture list.
+fn uses_self(closure: tree_sitter::Node) -> bool {
+    fn walk(node: tree_sitter::Node) -> bool {
+        if node.kind() == "capture_list" {
+            return false;
+        }
+        if node.kind() == "self_expression" {
+            return true;
+        }
+        (0..node.child_count())
+            .filter_map(|i| node.child(i))
+            .any(walk)
+    }
+    walk(closure)
 }
 
 impl AuditRule for ClosureRetainCycle {
@@ -170,7 +193,7 @@ impl AuditRule for ClosureRetainCycle {
 
         for closure in closures {
             let text = node_text(closure, ctx.source);
-            let has_self = text.contains("self.");
+            let has_self = text.contains("self.") && uses_self(closure);
             let has_weak_self = text.contains("[weak self]") || text.contains("[unowned self]");
 
             if !has_self || has_weak_self {
@@ -189,11 +212,16 @@ impl AuditRule for ClosureRetainCycle {
                 continue;
             }
 
-            if is_escaping(closure, ctx.source) {
+            if let Some(kind) = escape_kind(closure, ctx.source) {
                 issues.push(AuditIssue {
                     id: format!("{}:{}", self.id(), ctx.file_path),
                     category: self.category(),
-                    severity: self.severity(),
+                    // A callback is released when the work completes; only
+                    // storage owned by `self` makes a lasting cycle.
+                    severity: match kind {
+                        Escape::Stored => self.severity(),
+                        Escape::Callback => Severity::Low,
+                    },
                     rule: self.id().to_string(),
                     message: "Closure captures `self` strongly in potentially escaping context"
                         .into(),

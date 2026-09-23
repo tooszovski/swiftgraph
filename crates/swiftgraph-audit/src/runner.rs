@@ -412,9 +412,15 @@ let url = URL(string: "http://localhost:8080/api")!
             1
         );
         assert_eq!(
-            run_rule(&rule, "public final class VC: UIViewController {}\n").len(),
+            run_rule(
+                &rule,
+                "public final class VM: NSObject, ObservableObject {}\n"
+            )
+            .len(),
             1
         );
+        // UIKit classes are main-actor isolated by the SDK.
+        assert!(run_rule(&rule, "public final class VC: UIViewController {}\n").is_empty());
         // ...and the attribute lives inside `modifiers`.
         assert!(run_rule(&rule, "@MainActor final class VM: ObservableObject {}\n").is_empty());
         assert!(run_rule(&rule, "@MainActor class VM: ObservableObject {}\n").is_empty());

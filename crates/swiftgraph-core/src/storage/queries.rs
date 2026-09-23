@@ -67,6 +67,12 @@ pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
     Ok(())
 }
 
+/// Integer key of a symbol ID or path, interning it if new.
+pub fn intern(conn: &Connection, id: &str) -> SqlResult<i64> {
+    conn.execute("INSERT OR IGNORE INTO ids (id) VALUES (?1)", [id])?;
+    conn.query_row("SELECT key FROM ids WHERE id = ?1", [id], |r| r.get(0))
+}
+
 /// Remove a file and everything derived from it: its nodes, edges recorded
 /// in it, location-less edges (e.g. containment) touching its nodes and the
 /// names of its unresolved call sites.
@@ -75,15 +81,22 @@ pub fn insert_edge(conn: &Connection, edge: &GraphEdge) -> SqlResult<()> {
 /// refreshed when those files are reindexed.
 pub fn delete_file_data(conn: &Connection, path: &str) -> SqlResult<()> {
     conn.execute(
-        r#"DELETE FROM edges WHERE file = ?1
-           OR (file IS NULL AND (source IN (SELECT id FROM nodes WHERE file = ?1)
-                              OR target IN (SELECT id FROM nodes WHERE file = ?1)))"#,
+        "DELETE FROM edge_rows WHERE file = (SELECT key FROM ids WHERE id = ?1)",
+        [path],
+    )?;
+    conn.execute(
+        r#"DELETE FROM edge_rows WHERE file IS NULL AND (
+               source IN (SELECT i.key FROM nodes n JOIN ids i ON i.id = n.id WHERE n.file = ?1)
+            OR target IN (SELECT i.key FROM nodes n JOIN ids i ON i.id = n.id WHERE n.file = ?1))"#,
         [path],
     )?;
     conn.execute("DELETE FROM nodes WHERE file = ?1", [path])?;
     conn.execute("DELETE FROM name_refs WHERE file = ?1", [path])?;
     conn.execute("DELETE FROM member_types WHERE file = ?1", [path])?;
-    conn.execute("DELETE FROM call_sites WHERE file = ?1", [path])?;
+    conn.execute(
+        "DELETE FROM call_sites WHERE file = (SELECT key FROM ids WHERE id = ?1)",
+        [path],
+    )?;
     Ok(())
 }
 

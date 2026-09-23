@@ -32,18 +32,52 @@ CREATE TABLE IF NOT EXISTS nodes (
     FOREIGN KEY (file) REFERENCES files(path)
 );
 
-CREATE TABLE IF NOT EXISTS edges (
-    source      TEXT NOT NULL,
-    target      TEXT NOT NULL,
+-- Interned strings (symbol IDs, file paths): edges and call sites refer
+-- to them by integer key.
+CREATE TABLE IF NOT EXISTS ids (
+    key INTEGER PRIMARY KEY,
+    id  TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS edge_rows (
+    source      INTEGER NOT NULL,              -- ids.key
+    target      INTEGER NOT NULL,              -- ids.key
     kind        TEXT NOT NULL,
-    file        TEXT,
-    line        INTEGER NOT NULL DEFAULT 0,  -- 0 = no location (e.g. tree-sitter containment)
+    file        INTEGER,                       -- ids.key of the path
+    line        INTEGER NOT NULL DEFAULT 0,    -- 0 = no location (e.g. tree-sitter containment)
     col         INTEGER,
     is_implicit INTEGER NOT NULL DEFAULT 0,
-    ambiguous   INTEGER NOT NULL DEFAULT 0,  -- 1 = one of several plausible call targets
+    ambiguous   INTEGER NOT NULL DEFAULT 0,    -- 1 = one of several plausible call targets
     PRIMARY KEY (source, target, kind, line)
     -- No FK on source/target: targets may reference SDK symbols not in our index
-);
+) WITHOUT ROWID;
+
+-- The API view: string IDs as before, integer keys underneath.
+CREATE VIEW IF NOT EXISTS edges AS
+    SELECT s.id AS source, t.id AS target, e.kind, f.id AS file, e.line, e.col,
+           e.is_implicit, e.ambiguous, e.source AS source_key, e.target AS target_key
+    FROM edge_rows e
+    JOIN ids s ON s.key = e.source
+    JOIN ids t ON t.key = e.target
+    LEFT JOIN ids f ON f.key = e.file;
+
+CREATE TRIGGER IF NOT EXISTS edges_insert INSTEAD OF INSERT ON edges BEGIN
+    INSERT OR IGNORE INTO ids (id) VALUES (NEW.source);
+    INSERT OR IGNORE INTO ids (id) VALUES (NEW.target);
+    INSERT OR IGNORE INTO ids (id) SELECT NEW.file WHERE NEW.file IS NOT NULL;
+    INSERT OR IGNORE INTO edge_rows (source, target, kind, file, line, col, is_implicit, ambiguous)
+    VALUES ((SELECT key FROM ids WHERE id = NEW.source),
+            (SELECT key FROM ids WHERE id = NEW.target),
+            NEW.kind,
+            (SELECT key FROM ids WHERE id = NEW.file),
+            COALESCE(NEW.line, 0), NEW.col, COALESCE(NEW.is_implicit, 0), COALESCE(NEW.ambiguous, 0));
+END;
+
+CREATE TRIGGER IF NOT EXISTS edges_delete INSTEAD OF DELETE ON edges BEGIN
+    DELETE FROM edge_rows
+    WHERE source = OLD.source_key AND target = OLD.target_key AND kind = OLD.kind AND line = OLD.line;
+END;
+
 
 CREATE TABLE IF NOT EXISTS diagnostics (
     id          TEXT NOT NULL,
@@ -79,8 +113,8 @@ CREATE TABLE IF NOT EXISTS member_types (
 -- Tree-sitter call sites (JSON), resolved again on incremental runs when a
 -- declaration with their name is added, changed or removed.
 CREATE TABLE IF NOT EXISTS call_sites (
-    file   TEXT NOT NULL,
-    caller TEXT NOT NULL,
+    file   INTEGER NOT NULL,   -- ids.key of the path
+    caller INTEGER NOT NULL,   -- ids.key of the calling declaration
     name   TEXT NOT NULL,
     line   INTEGER NOT NULL,
     site   TEXT NOT NULL
@@ -98,9 +132,9 @@ CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
 CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
 CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file);
 CREATE INDEX IF NOT EXISTS idx_nodes_container ON nodes(container_usr);
-CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
-CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
-CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+CREATE INDEX IF NOT EXISTS idx_edge_rows_target ON edge_rows(target);
+CREATE INDEX IF NOT EXISTS idx_edge_rows_file ON edge_rows(file);
+CREATE INDEX IF NOT EXISTS idx_edge_rows_kind ON edge_rows(kind);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_file ON diagnostics(file);
 CREATE INDEX IF NOT EXISTS idx_diagnostics_category ON diagnostics(category);
 "#;

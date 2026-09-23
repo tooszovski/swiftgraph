@@ -186,7 +186,7 @@ pub fn index_directory_with_options(
     // On force reindex, start from an empty graph (FTS is kept in sync by triggers)
     if force {
         conn.execute_batch(
-            "DELETE FROM edges; DELETE FROM name_refs; DELETE FROM member_types; DELETE FROM call_sites; DELETE FROM nodes; DELETE FROM files;",
+            "DELETE FROM edge_rows; DELETE FROM ids; DELETE FROM name_refs; DELETE FROM member_types; DELETE FROM call_sites; DELETE FROM nodes; DELETE FROM files;",
         )?;
     }
 
@@ -575,7 +575,7 @@ fn purge_missing_files(
         names.extend(declared_names(conn, &[std::path::PathBuf::from(&path)])?);
         // The file is gone, so edges from other files into it are dangling too.
         conn.execute(
-            "DELETE FROM edges WHERE target IN (SELECT id FROM nodes WHERE file = ?1)",
+            "DELETE FROM edge_rows WHERE target IN (SELECT i.key FROM nodes n JOIN ids i ON i.id = n.id WHERE n.file = ?1)",
             [&path],
         )?;
         queries::delete_file_data(conn, &path)?;
@@ -750,8 +750,8 @@ fn resolve_calls(
             .filter(|c| resolver.may_resolve(c))
         {
             store_site.execute(rusqlite::params![
-                call.location.file,
-                call.caller,
+                queries::intern(&tx, &call.location.file)?,
+                queries::intern(&tx, &call.caller)?,
                 call.name,
                 call.location.line,
                 StoredSite::from(call).encode()
@@ -768,12 +768,12 @@ fn resolve_calls(
         let mut stale: Vec<crate::tree_sitter::parser::CallSite> = Vec::new();
         {
             let mut keys_by_name =
-                tx.prepare("SELECT DISTINCT file, caller, line FROM call_sites WHERE name = ?1")?;
+                tx.prepare("SELECT DISTINCT f.id, c.id, s.line FROM call_sites s JOIN ids f ON f.key = s.file JOIN ids c ON c.key = s.caller WHERE s.name = ?1")?;
             let mut sites_by_key = tx.prepare(
-                "SELECT name, site FROM call_sites WHERE file = ?1 AND caller = ?2 AND line = ?3",
+                "SELECT name, site FROM call_sites WHERE file = (SELECT key FROM ids WHERE id = ?1) AND caller = (SELECT key FROM ids WHERE id = ?2) AND line = ?3",
             )?;
             let mut drop_edges = tx.prepare(
-                "DELETE FROM edges WHERE kind = 'calls' AND file = ?1 AND source = ?2 AND line = ?3",
+                "DELETE FROM edge_rows WHERE kind = 'calls' AND file = (SELECT key FROM ids WHERE id = ?1) AND source = (SELECT key FROM ids WHERE id = ?2) AND line = ?3",
             )?;
             let mut seen = std::collections::HashSet::new();
             let mut names: Vec<&String> = affected_names.iter().collect();
@@ -836,7 +836,7 @@ fn resolve_calls(
     // Implementations of project protocol requirements (tree-sitter
     // declarations only; the Index Store records these itself)
     tx.execute(
-        "DELETE FROM edges WHERE kind = 'overrides' AND source LIKE 'ts::%'",
+        "DELETE FROM edge_rows WHERE kind = 'overrides' AND source IN (SELECT key FROM ids WHERE id LIKE 'ts::%')",
         [],
     )?;
     {

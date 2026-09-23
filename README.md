@@ -11,9 +11,11 @@ Built for AI-assisted iOS development: give your coding agent deep understanding
 ### Homebrew (recommended)
 
 ```bash
-brew tap tooszovski/swiftgraph https://github.com/tooszovski/swiftgraph
+brew tap tooszovski/tap
 brew install swiftgraph
 ```
+
+The formula lives in [tooszovski/homebrew-tap](https://github.com/tooszovski/homebrew-tap) and builds from source with the committed `Cargo.lock`. Releases published by the release workflow also carry a prebuilt Apple Silicon binary on the [GitHub releases](https://github.com/tooszovski/swiftgraph/releases) page.
 
 After installation, verify:
 
@@ -66,7 +68,7 @@ To point at a specific project (e.g. from a global config `~/.claude/mcp.json`):
 }
 ```
 
-Then restart Claude Code. Run `/mcp` to confirm `swiftgraph` is connected and 22 tools are available.
+Then restart Claude Code. Run `/mcp` to confirm `swiftgraph` is connected and 23 tools are available.
 
 ### First Run
 
@@ -99,13 +101,13 @@ LLMs working with large Swift codebases need more than text search. SwiftGraph g
 - **Targeted context** — "I need to add push notifications" → here are the 25 most relevant symbols
 - **Impact analysis** — "If I change this class, what breaks?" → blast radius with affected files and tests
 - **Architecture awareness** — auto-detects MVVM/VIPER/TCA, enforces layer boundaries
-- **Static analysis** — 66 audit rules catch concurrency bugs, memory leaks, security issues before review
+- **Static analysis** — 73 audit rules catch concurrency bugs, memory leaks, security issues before review
 
 All through the Model Context Protocol — works with Claude Code, Cursor, Windsurf, or any MCP client.
 
 ### Performance
 
-Tested on a production iOS app (943 Swift files):
+Measured with v0.5 on a production iOS app (943 Swift files):
 
 | Operation | Time |
 |-----------|------|
@@ -121,6 +123,7 @@ swiftgraph init          Initialize .swiftgraph/ config
 swiftgraph index         Index Swift files (--force for full reindex)
 swiftgraph search        Search symbols by name, filter by kind
 swiftgraph callers       Find callers of a symbol
+swiftgraph callees       Find callees of a symbol
 swiftgraph hierarchy     Type hierarchy (subtypes/supertypes)
 swiftgraph context       Build task-relevant context for AI
 swiftgraph impact        Blast radius analysis for a symbol
@@ -132,12 +135,14 @@ swiftgraph coupling      Module coupling metrics (Ca/Ce/instability)
 swiftgraph architecture  Detect or validate architecture pattern
 swiftgraph imports       Module dependency graph
 swiftgraph boundaries    Check architecture boundary rules
-swiftgraph audit         Static analysis (66 rules, 12 categories)
+swiftgraph audit         Static analysis (73 rules, 13 categories)
 swiftgraph watch         Auto-reindex on file changes
 swiftgraph serve         Start MCP server
 ```
 
-## MCP Tools (22)
+Symbol arguments accept a USR/node ID or a plain name (`UserService`, `load` or `load(id:)`); names resolve to the best exact match, then to a prefix/substring match.
+
+## MCP Tools (23)
 
 All CLI commands are also available as MCP tools with `swiftgraph_` prefix, plus a few extras:
 
@@ -165,6 +170,7 @@ All CLI commands are also available as MCP tools with `swiftgraph_` prefix, plus
 | `swiftgraph_imports` | Module dependency graph |
 | `swiftgraph_boundaries` | Architecture boundary enforcement |
 | `swiftgraph_audit` | Static analysis audit |
+| `swiftgraph_concurrency` | Isolation, Sendable, cross-actor calls and mutable state of a symbol |
 
 ## Examples
 
@@ -175,10 +181,10 @@ $ swiftgraph search "ViewModel"
 {
   "results": [
     {
-      "name": "CalendarMainViewModel",
+      "name": "ProfileViewModel",
       "kind": "class",
-      "location": { "file": "Sources/Flows/Calendar/CalendarMainViewModel.swift", "line": 10 },
-      "signature": "@MainActor"
+      "location": { "file": "Sources/Features/Profile/ProfileViewModel.swift", "line": 10 },
+      "attributes": ["@MainActor"]
     },
     ...
   ],
@@ -194,10 +200,11 @@ $ swiftgraph architecture
   "detected_pattern": "MVVM+Coordinator",
   "confidence": 0.48,
   "evidence": [
-    { "signal": "ViewModel/VM suffix", "count": 179 },
-    { "signal": "Coordinator", "count": 16 },
-    { "signal": "Router", "count": 29 }
-  ]
+    { "pattern": "MVVM+Coordinator", "signal": "ViewModel/VM suffix", "count": 179 },
+    { "pattern": "MVVM+Coordinator", "signal": "Coordinator", "count": 16 }
+  ],
+  "violations": [],
+  "layer_stats": [ ... ]
 }
 ```
 
@@ -206,13 +213,17 @@ $ swiftgraph architecture
 ```bash
 $ swiftgraph diff-impact --git-ref "HEAD~1..HEAD"
 {
+  "git_ref": "HEAD~1..HEAD",
   "changed_files": [
-    "Sources/Core/SigurManager.swift",
-    "Sources/Flows/Pass/BluetoothPassView.swift",
-    "Sources/Flows/Pass/BluetoothPassViewModel.swift"
+    "Sources/Core/AccessManager.swift",
+    "Sources/Features/Pass/PassView.swift",
+    "Sources/Features/Pass/PassViewModel.swift"
   ],
-  "changed_symbols": 15,
-  "total_impact": 42,
+  "changed_symbols": ["s:3App13AccessManagerC", ...],
+  "total_direct_impact": 15,
+  "total_transitive_impact": 42,
+  "affected_files": [ ... ],
+  "affected_tests": [ ... ],
   "risk_level": "medium"
 }
 ```
@@ -224,10 +235,12 @@ $ swiftgraph context "add push notifications"
 {
   "keywords": ["push", "notifications"],
   "nodes": [
-    { "name": "MainRouterDestination", "kind": "class", "relevance": 0.85 },
-    { "name": "AppDelegate", "kind": "class", "relevance": 0.72 },
+    { "name": "AppDelegate", "kind": "class", "score": 64.0, ... },
+    { "name": "NotificationService", "kind": "class", "score": 57.0, ... },
     ...
-  ]
+  ],
+  "files": [ ... ],
+  "architecture": "MVVM"
 }
 ```
 
@@ -237,11 +250,11 @@ $ swiftgraph context "add push notifications"
 $ swiftgraph audit --categories concurrency
 Audit: 24 issues (0 critical, 20 high, 4 medium, 0 low)
 
-[HIGH] CONC-001 (MCalendarView.swift:3): `MCalendarView` inherits UIViewController
+[HIGH] CONC-001 (CalendarViewController.swift:3): `CalendarViewController` inherits UIViewController
        but is missing @MainActor
   Fix: Add @MainActor to the class declaration
 
-[HIGH] CONC-002 (CalendarSearchViewModel.swift:62): Task captures `self` strongly
+[HIGH] CONC-002 (SearchViewModel.swift:62): Task captures `self` strongly
        — may cause retain cycle
   Fix: Use `[weak self]` capture list
 ```
@@ -272,7 +285,7 @@ $ swiftgraph boundaries --config boundaries.json
       "source_layer": "Services",
       "target_layer": "Views",
       "source_symbol": "makeContentView",
-      "target_symbol": "ServiceOrderBooleanView"
+      "target_symbol": "OrderSummaryView"
     },
     ...
   ],
@@ -280,7 +293,7 @@ $ swiftgraph boundaries --config boundaries.json
 }
 ```
 
-## Audit Rules (66 rules, 12 categories)
+## Audit Rules (73 rules, 13 categories)
 
 | Category | Rules | Examples |
 |----------|-------|---------|
@@ -291,11 +304,12 @@ $ swiftgraph boundaries --config boundaries.json
 | SwiftUI Arch | ARCH-001..005 | Logic in views, massive bodies, property wrapper misuse |
 | Networking | NET-001..006 | Deprecated APIs, missing error handling, reachability anti-patterns |
 | Codable | COD-001..005 | JSONSerialization, `try?` swallowing errors, date handling |
-| Energy | NRG-001..006 | Frequent timers, polling, continuous location, animation leaks |
+| Energy | NRG-001..008 | Frequent timers, polling, continuous location, animation leaks, short asyncAfter |
 | Storage | STR-001..004 | Wrong directories, backup exclusion, file protection |
 | Accessibility | A11Y-001..004 | Missing labels, Dynamic Type, color-only information |
 | Testing | TST-001..005 | sleep() in tests, missing assertions, shared state |
 | Modernization | MOD-001..005 | ObservableObject to @Observable, NavigationView to NavigationStack |
+| Swift Performance | PERF-001..006 | Large value copies, excessive ARC, existentials in collections, actor hops in loops |
 
 ### Output Formats
 
@@ -327,7 +341,7 @@ If the Xcode project or `Package.swift` is not in the root (for example, it live
 SwiftGraph works in two modes:
 
 - **tree-sitter only** (default) — no build required, parses Swift source directly. Captures declarations, call edges, conformances, extensions.
-- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. `index_store_path` accepts `"auto"` (default: `.build/index/store` for SwiftPM, `~/Library/Developer/Xcode/DerivedData/<Project>-*/Index.noindex/DataStore` for Xcode), `"none"` to force tree-sitter only, or an explicit path (relative to the project root). `swiftgraph index --index-store-path` overrides it. `swiftgraph index`, `swiftgraph watch` and the `swiftgraph_reindex` tool all use the same resolution. The backend used by the last run is reported by `swiftgraph_status` as `indexStrategy` (`index-store`, `hybrid` or `tree-sitter`); switching backends triggers a full rebuild so tree-sitter and Index Store symbol IDs never mix.
+- **Index Store + tree-sitter** — if your project has been built with Xcode, SwiftGraph reads the Index Store for compiler-accurate symbol data and augments with tree-sitter. `index_store_path` accepts `"auto"` (default: `.build/index/store` or SwiftPM's `.build/<triple>/debug/index/store`, `~/Library/Developer/Xcode/DerivedData/<Project>-*/Index.noindex/DataStore` for Xcode), `"none"` to force tree-sitter only, or an explicit path (relative to the project root). `swiftgraph index --index-store-path` overrides it. `swiftgraph index`, `swiftgraph watch` and the `swiftgraph_reindex` tool all use the same resolution. The backend used by the last run is reported by `swiftgraph_status` as `indexStrategy` (`index-store`, `hybrid` or `tree-sitter`); switching backends triggers a full rebuild so tree-sitter and Index Store symbol IDs never mix.
 
 ## Architecture
 
@@ -335,39 +349,42 @@ SwiftGraph works in two modes:
 swiftgraph/
 ├── crates/
 │   ├── swiftgraph-core/     Graph model, SQLite storage, indexing pipeline, analysis
-│   ├── swiftgraph-audit/    Audit engine, 12 rule categories, SARIF/JSON/text output
-│   └── swiftgraph-mcp/      MCP server (rmcp), CLI (clap), tool handlers
+│   ├── swiftgraph-audit/    Audit engine, 13 rule categories, SARIF/JSON/text output
+│   ├── swiftgraph-mcp/      MCP server (rmcp), CLI (clap), tool handlers
+│   └── swiftgraph-parser/   Optional Swift CLI on swift-syntax (SwiftPM package, not a Cargo crate)
 ```
+
+`swiftgraph-parser` enriches tree-sitter declarations with attributes, doc comments and signatures. It is optional: without it indexing works the same, minus that enrichment. Build it with `cd crates/swiftgraph-parser && swift build -c release` (Xcode 16+ / Swift 6 toolchain) and put the binary next to `swiftgraph`, on `PATH`, or point `SWIFTGRAPH_PARSER_PATH` at it.
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Rust (~11k lines) |
-| MCP SDK | [rmcp](https://github.com/anthropics/rust-sdk) v1.2 |
+| Language | Rust (~15k lines incl. tests) |
+| MCP SDK | [rmcp](https://github.com/modelcontextprotocol/rust-sdk) v1.8 |
 | Index Store | libIndexStore C FFI (dlopen at runtime) |
 | AST Parsing | [tree-sitter-swift](https://github.com/alex-pinkus/tree-sitter-swift) v0.7 |
-| Storage | SQLite + FTS5 ([rusqlite](https://github.com/nickel-organic/rusqlite)) |
-| Git | [gitoxide](https://github.com/GitoxideLabs/gitoxide) |
+| Storage | SQLite + FTS5 ([rusqlite](https://github.com/rusqlite/rusqlite)) |
+| Git | `git` CLI (diff-impact) |
 | Parallelism | [rayon](https://github.com/rayon-rs/rayon) (data) + [tokio](https://github.com/tokio-rs/tokio) (async) |
 
 ## Requirements
 
 - **macOS** (Index Store is Apple-only; tree-sitter mode works on any platform but is primarily tested on macOS)
-- **Rust** 1.75+ (`rustup` to install)
-- **Xcode** (optional, for Index Store data)
+- **Rust** 1.96+ (`rustup` to install; the minimum comes from the locked dependency tree)
+- **Xcode** (optional, for Index Store data; Xcode 16+ to build `swiftgraph-parser`)
 
 ## Building
 
 ```bash
 cargo build --workspace --release
-# Binary at target/release/swiftgraph (12MB, static)
+# Binary at target/release/swiftgraph
 ```
 
 ## Development
 
 ```bash
 cargo build --workspace           # Build
-cargo test --workspace            # Test (17 tests)
-cargo clippy --workspace -- -D warnings  # Lint (zero warnings policy)
+cargo test --workspace            # Test (91 tests; Index Store tests build a SwiftPM fixture, skipped without Xcode)
+cargo clippy --workspace --all-targets -- -D warnings  # Lint (zero warnings policy)
 cargo fmt --all                   # Format
 ```
 

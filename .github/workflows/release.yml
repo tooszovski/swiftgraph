@@ -1,0 +1,87 @@
+name: Release
+
+# Runs when scripts/release.sh pushes a vX.Y.Z tag. Every step is idempotent,
+# so the workflow can be re-run from the Actions UI after a partial failure.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-latest
+    env:
+      # Fine-grained token with contents:write on tooszovski/homebrew-tap.
+      # The formula bump is skipped when the secret is not configured.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)"/\1/')"
+          if [ "v${VERSION}" != "${TAG}" ]; then
+            echo "::error::tag ${TAG} does not match Cargo.toml version ${VERSION}"
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked -p swiftgraph-mcp
+
+      - name: Package binary
+        id: package
+        run: |
+          ASSET="swiftgraph-${GITHUB_REF_NAME}-$(uname -m)-apple-darwin.tar.gz"
+          tar -C target/release -czf "${ASSET}" swiftgraph
+          shasum -a 256 "${ASSET}" > "${ASSET}.sha256"
+          echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release (if missing) and upload binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "SwiftGraph ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
+          gh release upload "${GITHUB_REF_NAME}" --clobber \
+            "${{ steps.package.outputs.asset }}" \
+            "${{ steps.package.outputs.asset }}.sha256"
+
+      - name: Bump formula in tooszovski/homebrew-tap
+        if: ${{ env.HOMEBREW_TAP_TOKEN != '' }}
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: swiftgraph
+          homebrew-tap: tooszovski/homebrew-tap
+          download-url: https://github.com/tooszovski/swiftgraph/archive/refs/tags/${{ github.ref_name }}.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

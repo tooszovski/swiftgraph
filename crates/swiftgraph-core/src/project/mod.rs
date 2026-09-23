@@ -407,16 +407,16 @@ mod tests {
         let root = project.path().canonicalize().unwrap();
         let other = derived_data_entry(
             dd.path(),
-            "Noor-aaaa",
-            "/tmp/elsewhere/ios-contracts/Noor.xcodeproj",
+            "Wallet-aaaa",
+            "/tmp/elsewhere/checkout/Wallet.xcodeproj",
             true,
         );
         // Only a foreign store: none, with a reason
-        let (store, note) = find_xcode_index_store_in(dd.path(), "Noor", &root);
+        let (store, note) = find_xcode_index_store_in(dd.path(), "Wallet", &root);
         assert_eq!(store, None);
         let note = note.unwrap();
         assert!(
-            note.contains("/tmp/elsewhere/ios-contracts/Noor.xcodeproj"),
+            note.contains("/tmp/elsewhere/checkout/Wallet.xcodeproj"),
             "{note}"
         );
         assert!(note.contains(&root.display().to_string()), "{note}");
@@ -424,11 +424,11 @@ mod tests {
         // The project's own store wins over the foreign one
         let own = derived_data_entry(
             dd.path(),
-            "Noor-bbbb",
-            &format!("{}/Noor.xcodeproj", root.display()),
+            "Wallet-bbbb",
+            &format!("{}/Wallet.xcodeproj", root.display()),
             false,
         );
-        let (store, note) = find_xcode_index_store_in(dd.path(), "Noor", &root);
+        let (store, note) = find_xcode_index_store_in(dd.path(), "Wallet", &root);
         assert_eq!(store, Some(own));
         assert_eq!(note, None);
         assert_ne!(Some(other), store);

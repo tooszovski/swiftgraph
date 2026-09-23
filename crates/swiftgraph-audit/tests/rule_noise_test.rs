@@ -297,3 +297,51 @@ final class Screen {
 "#;
     assert_eq!(lines(&check_with(&rule, source, &facts)), vec![14]);
 }
+
+// Runner
+
+#[test]
+fn runner_reports_each_finding_once_per_line() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Close.swift"),
+        "struct Close: View {\n    var body: some View {\n        Button(action: close) {\n            Image(systemName: \"xmark\")\n                .font(.system(size: 17, weight: .semibold))\n                .foregroundColor(.white)\n        }\n    }\n}\n",
+    )
+    .unwrap();
+    let result = run_audit(dir.path(), &AuditOptions::default()).unwrap();
+    let mut keys: Vec<_> = result
+        .issues
+        .iter()
+        .map(|i| (i.file.clone(), i.line, i.rule.clone(), i.message.clone()))
+        .collect();
+    let a11y = keys.iter().filter(|k| k.2 == "A11Y-001").count();
+    assert_eq!(a11y, 1, "{:?}", result.issues);
+    let before = keys.len();
+    keys.sort();
+    keys.dedup();
+    assert_eq!(keys.len(), before, "duplicates: {:?}", result.issues);
+}
+
+#[test]
+fn runner_respects_config_include_and_exclude() {
+    let dir = tempfile::tempdir().unwrap();
+    let delegate = "class Holder: NSObject {\n    var delegate: HolderDelegate?\n}\n";
+    std::fs::create_dir_all(dir.path().join(".swiftgraph")).unwrap();
+    std::fs::create_dir_all(dir.path().join("App/Preview Content")).unwrap();
+    std::fs::write(dir.path().join("App/Holder.swift"), delegate).unwrap();
+    std::fs::write(dir.path().join("App/Message.pb.swift"), delegate).unwrap();
+    std::fs::write(dir.path().join("App/Preview Content/Mock.swift"), delegate).unwrap();
+    std::fs::write(
+        dir.path().join(".swiftgraph/config.json"),
+        r#"{"exclude": ["**/*.pb.swift", "**/Preview Content/**"]}"#,
+    )
+    .unwrap();
+    let result = run_audit(dir.path(), &AuditOptions::default()).unwrap();
+    let mut files: Vec<String> = result
+        .issues
+        .iter()
+        .map(|i| i.file.rsplit('/').next().unwrap_or_default().to_string())
+        .collect();
+    files.dedup();
+    assert_eq!(files, vec!["Holder.swift".to_string()]);
+}

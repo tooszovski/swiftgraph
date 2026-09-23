@@ -55,7 +55,10 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
     let _span = info_span!("audit", root = %project_root.display()).entered();
 
     // Rule settings from `.swiftgraph/config.json`, then the options
-    let config = swiftgraph_core::config::Config::load(project_root).audit;
+    let project_config = swiftgraph_core::config::Config::load(project_root);
+    let include_set = project_config.include_globset();
+    let exclude_set = project_config.exclude_globset();
+    let config = &project_config.audit;
     let disabled: HashSet<&str> = config
         .disabled_rules
         .iter()
@@ -101,6 +104,11 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
                 && !path.to_string_lossy().contains("/Generated/")
                 && !path.to_string_lossy().contains("/DerivedData/")
         })
+        // Same include/exclude globs as indexing (`.swiftgraph/config.json`)
+        .filter(|e| {
+            let relative = e.path().strip_prefix(project_root).unwrap_or(e.path());
+            project_config.should_include(relative, &include_set, &exclude_set)
+        })
         .filter(|e| {
             if let Some(ref prefix) = options.path_filter {
                 e.path().to_string_lossy().contains(prefix.as_str())
@@ -144,6 +152,11 @@ pub fn run_audit(project_root: &Path, options: &AuditOptions) -> Result<AuditRes
             .then_with(|| a.line.cmp(&b.line))
             .then_with(|| a.rule.cmp(&b.rule))
             .then_with(|| a.message.cmp(&b.message))
+    });
+    // Nested expressions (a modifier chain) can match a rule several times on
+    // one line; report each distinct finding once.
+    issues.dedup_by(|a, b| {
+        a.file == b.file && a.line == b.line && a.rule == b.rule && a.message == b.message
     });
 
     // Per-category cap: ensure each category gets fair representation

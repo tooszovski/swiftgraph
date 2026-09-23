@@ -543,3 +543,21 @@ pub fn label_owner<'a>(statements: Node<'a>, source: &'a str) -> Option<Node<'a>
     )
     .then_some(call)
 }
+
+/// `source` with every comment replaced by spaces (newlines kept), so byte
+/// offsets and line numbers of the tree still match.
+pub fn blank_comments(source: &str, tree: &Tree) -> String {
+    let mut bytes = source.as_bytes().to_vec();
+    let comments = find_descendants(tree.root_node(), source, &|n, _| {
+        matches!(n.kind(), "comment" | "multiline_comment")
+    });
+    for comment in comments {
+        for b in &mut bytes[comment.start_byte()..comment.end_byte()] {
+            if *b != b'\n' {
+                *b = b' ';
+            }
+        }
+    }
+    // Only ASCII spaces were written over whole comments: still UTF-8
+    String::from_utf8(bytes).unwrap_or_else(|_| source.to_string())
+}

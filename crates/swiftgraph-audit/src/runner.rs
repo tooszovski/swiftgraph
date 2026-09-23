@@ -207,10 +207,13 @@ fn check_file(
 
     let mut parser = rules::swift_parser().map_err(|_| RunnerError::TreeSitter)?;
     let tree = parser.parse(&source, None).ok_or(RunnerError::TreeSitter)?;
+    // Rules see the code without comments (same offsets): commented-out
+    // code must not produce findings.
+    let code = rules::blank_comments(&source, &tree);
 
     let ctx = FileContext {
         file_path: &file_path,
-        source: &source,
+        source: &code,
         tree: &tree,
         project,
     };

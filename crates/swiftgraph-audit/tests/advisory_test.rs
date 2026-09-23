@@ -94,3 +94,25 @@ fn deployment_target_is_read_from_build_settings() {
     let none = tempfile::tempdir().unwrap();
     assert_eq!(ios_deployment_target(none.path()), None);
 }
+
+#[test]
+fn commented_out_code_is_not_audited() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Old.swift"),
+        "final class Old {\n    // input.drive(onNext: { [weak self] value in\n    //     guard let self else { return }\n    // })\n    /* let apiKey = \"sk_live_51H8xY2eZvKYlo2C9\" */\n    func run() {\n        items.forEach { [weak self] value in\n            guard let self else { return }\n            self.use(value)\n        }\n    }\n}\n",
+    )
+    .unwrap();
+    let options = AuditOptions {
+        min_severity: Severity::Advisory,
+        ..AuditOptions::default()
+    };
+    let result = run_audit(dir.path(), &options).unwrap();
+    let hits: Vec<(String, u32)> = result
+        .issues
+        .iter()
+        .filter(|i| i.rule == "PERF-002" || i.rule == "SEC-001")
+        .map(|i| (i.rule.clone(), i.line))
+        .collect();
+    assert_eq!(hits, vec![("PERF-002".to_string(), 7)]);
+}
